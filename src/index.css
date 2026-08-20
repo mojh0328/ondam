@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #FAFAFA;
+  --color-foreground: #09090B;
+  --color-muted: #F4F4F5;
+  --color-muted-foreground: #71717A;
+  --color-border: #E4E4E7;
+  --color-primary: #09090B;
+  --color-primary-foreground: #FAFAFA;
+  --color-destructive: #EF4444;
+  --color-destructive-foreground: #FEF2F2;
+
+  --font-sans: 'Inter', sans-serif;
+  --font-display: 'Outfit', sans-serif;
+}
+
+@layer base {
+  html {
+    overflow-x: hidden;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased selection:bg-zinc-900/10 selection:text-zinc-900;
+    overflow-x: hidden;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+}

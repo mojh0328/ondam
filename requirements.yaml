@@ -1,0 +1,9 @@
+packages:
+  "lucide-react": "Clean vector icons for professional UI"
+  "clsx": "Class merging utility"
+  "tailwind-merge": "Tailwind class merging utility"
+  "framer-motion": "Smooth animations for page transitions and modals"
+images: []
+notes:
+  - "App uses React Query for data fetching from generated orval client"
+  - "Wouter is used for routing"
