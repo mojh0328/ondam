@@ -1,271 +1,73 @@
 import { useState } from "react";
-import { useAuth } from "@/hooks/use-auth";
-import { apiFetch } from "@/lib/api-fetch";
-import { Card, CardContent } from "@/components/ui/card";
+import { useAuth } from "@/context/AuthContext";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
-import { User, Lock, CheckCircle2, AlertCircle, Eye, EyeOff } from "lucide-react";
-import type { AuthUser } from "@workspace/api-client-react";
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-async function parseApiError(res: Response): Promise<string> {
-  try {
-    const d = await res.json();
-    if (typeof d?.error === "string") return d.error;
-  } catch { /* ignore */ }
-  return `Request failed (${res.status})`;
-}
-
-interface StatusMsg { ok: boolean; text: string }
-
-function StatusBanner({ msg }: { msg: StatusMsg }) {
-  return (
-    <div className={`flex items-start gap-2 px-3 py-2.5 rounded-xl text-sm ${
-      msg.ok
-        ? "bg-emerald-50 border border-emerald-200 text-emerald-700"
-        : "bg-red-50 border border-red-200 text-red-600"
-    }`}>
-      {msg.ok
-        ? <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-        : <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />}
-      <span className="leading-snug">{msg.text}</span>
-    </div>
-  );
-}
-
-function PasswordInput({
-  id, value, onChange, placeholder, autoComplete,
-}: {
-  id: string; value: string;
-  onChange: (v: string) => void;
-  placeholder?: string; autoComplete?: string;
-}) {
-  const [show, setShow] = useState(false);
-  return (
-    <div className="relative">
-      <input
-        id={id}
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        autoComplete={autoComplete}
-        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 pr-10 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900"
-      />
-      <button
-        type="button"
-        onClick={() => setShow((s) => !s)}
-        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 transition-colors"
-      >
-        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-      </button>
-    </div>
-  );
-}
-
-// ── main page ─────────────────────────────────────────────────────────────────
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { ArrowLeft, User, Lock, Save, Trash2 } from "lucide-react";
 
 export default function Profile() {
-  const { user, updateUser } = useAuth();
+  const { currentUser, updateAccount, logout, deleteAccount, showConfirm } = useAuth();
+  
+  const [username, setUsername] = useState(currentUser?.username || "");
+  const [password, setPassword] = useState("");
+  const [phone, setPhone] = useState(currentUser?.phone || "");
 
-  // Username form state
-  const [newUsername, setNewUsername] = useState("");
-  const [usernameStatus, setUsernameStatus] = useState<StatusMsg | null>(null);
-  const [usernameLoading, setUsernameLoading] = useState(false);
-
-  // Password form state
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [passwordStatus, setPasswordStatus] = useState<StatusMsg | null>(null);
-  const [passwordLoading, setPasswordLoading] = useState(false);
-
-  // ── Submit: change username ───────────────────────────────────────────────
-  async function handleUsernameSubmit(e: React.FormEvent) {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setUsernameStatus(null);
-    if (!newUsername.trim()) return;
+    updateAccount(username, password, phone);
+    setPassword("");
+  };
 
-    setUsernameLoading(true);
-    try {
-      const res = await apiFetch("/api/auth/profile", {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ newUsername }),
-      });
-      if (!res.ok) {
-        setUsernameStatus({ ok: false, text: await parseApiError(res) });
-        return;
-      }
-      const data = (await res.json()) as { user: AuthUser };
-      updateUser(data.user);
-      setNewUsername("");
-      setUsernameStatus({ ok: true, text: `Username updated to "${data.user.username}".` });
-    } catch {
-      setUsernameStatus({ ok: false, text: "Network error — please try again." });
-    } finally {
-      setUsernameLoading(false);
-    }
-  }
-
-  // ── Submit: change password ───────────────────────────────────────────────
-  async function handlePasswordSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setPasswordStatus(null);
-
-    if (!currentPassword) {
-      setPasswordStatus({ ok: false, text: "Enter your current password." });
-      return;
-    }
-    if (newPassword.length < 6) {
-      setPasswordStatus({ ok: false, text: "New password must be at least 6 characters." });
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setPasswordStatus({ ok: false, text: "New passwords do not match." });
-      return;
-    }
-
-    setPasswordLoading(true);
-    try {
-      const res = await apiFetch("/api/auth/profile", {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentPassword, newPassword }),
-      });
-      if (!res.ok) {
-        setPasswordStatus({ ok: false, text: await parseApiError(res) });
-        return;
-      }
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      setPasswordStatus({ ok: true, text: "Password changed successfully." });
-    } catch {
-      setPasswordStatus({ ok: false, text: "Network error — please try again." });
-    } finally {
-      setPasswordLoading(false);
-    }
-  }
+  const handleDeleteAccount = () => {
+    showConfirm("Are you sure? All your data will be permanently deleted.", () => {
+      deleteAccount();
+    });
+  };
 
   return (
-    <div className="p-3 sm:p-6 max-w-2xl mx-auto space-y-5 sm:space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-xl sm:text-2xl font-display font-bold text-zinc-900">Account Settings</h1>
-        <p className="text-xs sm:text-sm text-zinc-500 mt-0.5">Update your login credentials.</p>
+    <div className="p-6 max-w-xl mx-auto space-y-6">
+      <div className="flex items-center gap-4">
+        <Link href="/">
+          <Button variant="outline" size="icon">
+            <ArrowLeft size={16} />
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold">Account Settings</h1>
+        </div>
       </div>
 
-      {/* ── Change Username ── */}
-      <Card>
-        <CardContent className="p-4 sm:p-6 space-y-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center shrink-0">
-              <User className="w-4 h-4 text-zinc-600" />
-            </div>
-            <div>
-              <h2 className="text-sm sm:text-base font-semibold text-zinc-900">Change Username</h2>
-              <p className="text-xs text-zinc-500">
-                Current: <span className="font-medium text-zinc-700">{user?.username}</span>
-              </p>
-            </div>
+      <Card className="p-6 space-y-6 bg-white shadow-sm rounded-xl">
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-slate-700">Username</label>
+            <Input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="pl-3" required />
+          </div>
+          
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-slate-700">Phone</label>
+            <Input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} className="pl-3" required />
           </div>
 
-          <form onSubmit={handleUsernameSubmit} className="space-y-3">
-            <div className="space-y-1.5">
-              <label htmlFor="new-username" className="text-xs font-medium text-zinc-600">
-                New username
-              </label>
-              <input
-                id="new-username"
-                type="text"
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-                placeholder="Enter new username (min 3 chars)"
-                autoComplete="username"
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900"
-              />
-            </div>
-
-            {usernameStatus && <StatusBanner msg={usernameStatus} />}
-
-            <Button
-              type="submit"
-              disabled={usernameLoading || !newUsername.trim()}
-              className="w-full sm:w-auto"
-            >
-              {usernameLoading ? "Saving…" : "Update username"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      {/* ── Change Password ── */}
-      <Card>
-        <CardContent className="p-4 sm:p-6 space-y-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center shrink-0">
-              <Lock className="w-4 h-4 text-zinc-600" />
-            </div>
-            <div>
-              <h2 className="text-sm sm:text-base font-semibold text-zinc-900">Change Password</h2>
-              <p className="text-xs text-zinc-500">You must enter your current password to set a new one.</p>
-            </div>
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-slate-700">New Password (Keep blank to skip)</label>
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="pl-3" />
           </div>
 
-          <form onSubmit={handlePasswordSubmit} className="space-y-3">
-            <div className="space-y-1.5">
-              <label htmlFor="current-password" className="text-xs font-medium text-zinc-600">
-                Current password
-              </label>
-              <PasswordInput
-                id="current-password"
-                value={currentPassword}
-                onChange={setCurrentPassword}
-                placeholder="Your current password"
-                autoComplete="current-password"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor="new-password" className="text-xs font-medium text-zinc-600">
-                New password <span className="text-zinc-400 font-normal">(min 6 characters)</span>
-              </label>
-              <PasswordInput
-                id="new-password"
-                value={newPassword}
-                onChange={setNewPassword}
-                placeholder="New password"
-                autoComplete="new-password"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor="confirm-password" className="text-xs font-medium text-zinc-600">
-                Confirm new password
-              </label>
-              <PasswordInput
-                id="confirm-password"
-                value={confirmPassword}
-                onChange={setConfirmPassword}
-                placeholder="Repeat new password"
-                autoComplete="new-password"
-              />
-            </div>
-
-            {passwordStatus && <StatusBanner msg={passwordStatus} />}
-
-            <Button
-              type="submit"
-              disabled={passwordLoading || !currentPassword || !newPassword || !confirmPassword}
-              className="w-full sm:w-auto"
-            >
-              {passwordLoading ? "Saving…" : "Update password"}
+          <div className="pt-2 flex justify-end gap-2">
+            <Button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white flex items-center gap-2">
+              <Save size={16} /> Save Changes
             </Button>
-          </form>
-        </CardContent>
+          </div>
+        </form>
+
+        <div className="pt-6 border-t flex justify-between items-center">
+          <Button variant="ghost" onClick={handleDeleteAccount} className="text-red-500 hover:text-red-600 hover:bg-red-50 flex items-center gap-2">
+            <Trash2 size={16} /> Delete Account
+          </Button>
+          <Button variant="destructive" onClick={logout}>Sign Out</Button>
+        </div>
       </Card>
     </div>
   );

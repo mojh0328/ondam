@@ -1,917 +1,527 @@
-import { useState, useEffect, useMemo, useRef } from "react";
-import { Plus, Edit, Trash2, Search, List, ChevronLeft, PackageOpen, Pencil, MoveRight } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect, useRef } from "react";
+import { Link } from "wouter";
+import { Plus, ArrowLeft, Search, Edit, Trash2, Package, Folder, FolderPlus, Upload, Download, Layers, Percent } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Modal } from "@/components/ui/modal";
-import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatCurrency, formatAmount, unitLabel, largeUnitLabel } from "@/lib/utils";
-import { toast } from "@/hooks/use-toast";
-import {
-  useListIngredients,
-  useCreateIngredient,
-  useUpdateIngredient,
-  useDeleteIngredient,
-  useListCategories,
-  useCreateCategory,
-  useRenameCategory,
-  useDeleteCategory,
-  useBulkMoveIngredients,
-  getListIngredientsQueryKey,
-  getListCategoriesQueryKey,
-  type Ingredient,
-  type Category,
-} from "@workspace/api-client-react";
+import { Input } from "@/components/ui/input";
+import { useAuth } from "@/context/AuthContext";
 
-// Palette applied by position so colors stay stable when names change
-const COLOR_PALETTE = [
-  { bg: "bg-green-50",  border: "border-green-200"  },
-  { bg: "bg-red-50",    border: "border-red-200"    },
-  { bg: "bg-blue-50",   border: "border-blue-200"   },
-  { bg: "bg-yellow-50", border: "border-yellow-200" },
-  { bg: "bg-sky-50",    border: "border-sky-200"    },
-  { bg: "bg-orange-50", border: "border-orange-200" },
-  { bg: "bg-amber-50",  border: "border-amber-200"  },
-  { bg: "bg-zinc-50",   border: "border-zinc-200"   },
-];
+export type MasterIngredient = {
+  id: string;
+  name: string;
+  purchaseAmount: number;
+  unit: string;
+  totalPrice: number;
+  yieldPercent: number;
+  costPerGram: number;
+  supplierId: string;
+};
 
-function categoryColor(index: number) {
-  return COLOR_PALETTE[index % COLOR_PALETTE.length];
-}
-
-interface ParsedEntry { name: string; unit: string; purchaseWeightGrams: number; purchasePrice: number; }
-
-function parseBulkLine(line: string): ParsedEntry | null {
-  const trimmed = line.trim();
-  if (!trimmed) return null;
-  const match = trimmed.match(/^(.+?)\s+([\d.]+)\s*(kg|g|L|ml)\s+(?:AUD\s*)?([\d,]+(?:\.\d+)?)/i);
-  if (!match) return null;
-  const name = match[1].trim();
-  const weightValue = parseFloat(match[2]);
-  const rawUnit = match[3];
-  const price = parseFloat(match[4].replace(/,/g, ""));
-  if (!name || isNaN(weightValue) || isNaN(price) || weightValue <= 0 || price < 0) return null;
-  const lu = rawUnit.toLowerCase();
-  const isVolume = lu === "ml" || lu === "l";
-  const unit = isVolume ? "ml" : "g";
-  const purchaseWeightGrams = lu === "kg" ? weightValue * 1000 : lu === "l" ? weightValue * 1000 : weightValue;
-  return { name, unit, purchaseWeightGrams, purchasePrice: price };
-}
+export type Supplier = {
+  id: string;
+  name: string;
+};
 
 export default function Ingredients() {
-  const queryClient = useQueryClient();
+  const { currentUser } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: ingredients, isLoading: loadingIngredients } = useListIngredients();
-  const { data: categories, isLoading: loadingCategories } = useListCategories();
+  const userPrefix = currentUser ? `_user_${currentUser.username}` : "";
+  const suppliersKey = `ingredient_suppliers${userPrefix}`;
+  const ingredientsKey = `master_ingredients${userPrefix}`;
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [suppliers, setSuppliers] = useState<Supplier[]>(() => {
+    const saved = localStorage.getItem(suppliersKey);
+    return saved ? JSON.parse(saved) : [
+      { id: "all", name: "All Vendors" },
+      { id: "sup_1", name: "General Supplier" }
+    ];
+  });
 
-  // ── Category modals ───────────────────────────────────────────────────────
-  const [renamingCategory, setRenamingCategory] = useState<Category | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [renameEmojiValue, setRenameEmojiValue] = useState("");
-  const renameInputRef = useRef<HTMLInputElement>(null);
-  const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
+  const [activeSupplierId, setActiveSupplierId] = useState<string>("all");
 
-  // ── Create category modal ─────────────────────────────────────────────────
-  const [isCreateCategoryOpen, setIsCreateCategoryOpen] = useState(false);
-  const [newCatName, setNewCatName] = useState("");
-  const [newCatEmoji, setNewCatEmoji] = useState("📦");
+  const [ingredients, setIngredients] = useState<MasterIngredient[]>(() => {
+    try {
+      const saved = localStorage.getItem(ingredientsKey);
+      if (saved) return JSON.parse(saved);
+    } catch (e) { console.error(e); }
+    return [];
+  });
 
-  // ── Ingredient add/edit modal ─────────────────────────────────────────────
+  const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingItem, setEditingItem] = useState<Ingredient | null>(null);
-  const [ingName, setIngName] = useState("");
-  const [ingUnit, setIngUnit] = useState<"g" | "ml">("g");
-  const [ingWeight, setIngWeight] = useState("");
-  const [ingPrice, setIngPrice] = useState("");
-  const [ingYield, setIngYield] = useState("100");
-  const [ingCategory, setIngCategory] = useState("");
-
-  // ── Bulk add modal ────────────────────────────────────────────────────────
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  const [editingIngredient, setEditingIngredient] = useState<MasterIngredient | null>(null);
+
+  const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
+  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [supplierNameInput, setSupplierNameInput] = useState("");
+
+  const [name, setName] = useState("");
+  const [purchaseAmount, setPurchaseAmount] = useState<number | "">("");
+  const [unit, setUnit] = useState("g");
+  const [totalPrice, setTotalPrice] = useState<number | "">("");
+  const [yieldPercent, setYieldPercent] = useState<number | "">(100);
+  const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
-  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
-
-  // ── Bulk move (checkboxes) ────────────────────────────────────────────────
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [moveTargetCategoryId, setMoveTargetCategoryId] = useState<string>("");
-
-  // ── Mutations ─────────────────────────────────────────────────────────────
-
-  // Invalidates all cached recipe costs across every store whenever ingredient
-  // data changes (price, name, yield, or deletion). Uses a predicate because
-  // menu-item query keys are URL strings that include the store ID, so a simple
-  // prefix key cannot match them all at once.
-  const invalidateRecipeCosts = () => {
-    queryClient.invalidateQueries({
-      predicate: (query) => {
-        const key = query.queryKey[0];
-        return typeof key === "string" && key.includes("/menu-items");
-      },
-    });
-  };
-
-  const invalidateAll = () => {
-    queryClient.invalidateQueries({ queryKey: getListIngredientsQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getListCategoriesQueryKey() });
-    invalidateRecipeCosts();
-  };
-
-  const { mutate: createItem, isPending: isCreating, mutateAsync: createItemAsync } = useCreateIngredient({
-    mutation: { onSuccess: () => { queryClient.invalidateQueries({ queryKey: getListIngredientsQueryKey() }); closeModal(); } },
-  });
-  const { mutate: updateItem, isPending: isUpdating, mutateAsync: updateItemAsync } = useUpdateIngredient({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListIngredientsQueryKey() });
-        invalidateRecipeCosts();
-        closeModal();
-      },
-    },
-  });
-  const { mutate: deleteItem } = useDeleteIngredient({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListIngredientsQueryKey() });
-        invalidateRecipeCosts();
-      },
-    },
-  });
-  const { mutate: createCategoryMutation, isPending: isCreatingCategory } = useCreateCategory({
-    mutation: {
-      onSuccess: (created) => {
-        invalidateAll();
-        toast({ title: "Category created", description: `"${created.name}" is ready to use.` });
-        setIsCreateCategoryOpen(false);
-        setNewCatName("");
-        setNewCatEmoji("📦");
-      },
-      onError: () => toast({ title: "Create failed", description: "Could not create category.", variant: "destructive" }),
-    },
-  });
-  const { mutate: renameCategory, isPending: isRenaming } = useRenameCategory({
-    mutation: {
-      onSuccess: (updated) => {
-        invalidateAll();
-        toast({ title: "Category updated", description: `Saved as "${updated.name}".` });
-        setRenamingCategory(null);
-      },
-      onError: () => toast({ title: "Update failed", description: "That name may already be in use.", variant: "destructive" }),
-    },
-  });
-  const { mutate: deleteCategory, isPending: isDeleting } = useDeleteCategory({
-    mutation: {
-      onSuccess: () => {
-        invalidateAll();
-        const name = deletingCategory?.name ?? "Category";
-        toast({ title: `"${name}" deleted`, description: "All ingredients in that category were removed." });
-        setDeletingCategory(null);
-        setSelectedCategoryId(null);
-      },
-      onError: () => toast({ title: "Delete failed", variant: "destructive" }),
-    },
-  });
-  const { mutate: bulkMove, isPending: isBulkMoving } = useBulkMoveIngredients({
-    mutation: {
-      onSuccess: (result) => {
-        queryClient.invalidateQueries({ queryKey: getListIngredientsQueryKey() });
-        const targetCat = (categories ?? []).find((c) => c.id === parseInt(moveTargetCategoryId));
-        toast({ title: `${result.moved} ingredient${result.moved !== 1 ? "s" : ""} moved`, description: `Moved to "${targetCat?.name ?? "category"}".` });
-        setSelectedIds(new Set());
-        setMoveTargetCategoryId("");
-      },
-      onError: () => toast({ title: "Move failed", variant: "destructive" }),
-    },
-  });
-
-  // ── Derived data ──────────────────────────────────────────────────────────
-  const selectedCategory = useMemo(
-    () => categories?.find((c) => c.id === selectedCategoryId) ?? null,
-    [categories, selectedCategoryId],
-  );
-
-  const isUncategorizedView = selectedCategoryId === -1;
-
-  const knownCategoryNames = useMemo(
-    () => new Set((categories ?? []).map((c) => c.name)),
-    [categories],
-  );
-
-  const orphanedIngredients = useMemo(
-    () => (ingredients ?? []).filter((i) => !knownCategoryNames.has(i.category)),
-    [ingredients, knownCategoryNames],
-  );
-
-  const categoryIngredients = useMemo(() => {
-    let base: Ingredient[];
-    if (isUncategorizedView) {
-      base = [...orphanedIngredients];
-    } else if (selectedCategory) {
-      base = (ingredients ?? []).filter((i) => i.category === selectedCategory.name);
-    } else {
-      return [];
-    }
-    const sorted = base.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    if (!searchQuery.trim()) return sorted;
-    const q = searchQuery.trim().toLowerCase();
-    return sorted.filter((i) => i.name.toLowerCase().includes(q));
-  }, [ingredients, selectedCategory, isUncategorizedView, orphanedIngredients, searchQuery]);
-
-  const countByCategory = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const ing of ingredients ?? []) map[ing.category] = (map[ing.category] ?? 0) + 1;
-    return map;
-  }, [ingredients]);
-
-  const allVisibleSelected =
-    categoryIngredients.length > 0 && categoryIngredients.every((i) => selectedIds.has(i.id));
-
-  const otherCategories = useMemo(
-    () => (categories ?? []).filter((c) => c.id !== selectedCategoryId),
-    [categories, selectedCategoryId],
-  );
-
-  // ── Effects ───────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (editingItem) {
-      setIngName(editingItem.name);
-      setIngUnit((editingItem.unit === "ml" ? "ml" : "g") as "g" | "ml");
-      setIngWeight(editingItem.purchaseWeightGrams.toString());
-      setIngPrice(editingItem.purchasePrice.toString());
-      setIngYield((editingItem.yieldPercentage ?? 100).toString());
-      setIngCategory(editingItem.category);
-    } else {
-      setIngName(""); setIngUnit("g"); setIngWeight(""); setIngPrice(""); setIngYield("100");
-      setIngCategory(selectedCategory?.name ?? "Other");
-    }
-  }, [editingItem, selectedCategory]);
 
   useEffect(() => {
-    if (renamingCategory) {
-      setRenameValue(renamingCategory.name);
-      setRenameEmojiValue(renamingCategory.emoji);
-      setTimeout(() => renameInputRef.current?.select(), 50);
+    localStorage.setItem(suppliersKey, JSON.stringify(suppliers));
+  }, [suppliers, suppliersKey]);
+
+  useEffect(() => {
+    localStorage.setItem(ingredientsKey, JSON.stringify(ingredients));
+  }, [ingredients, ingredientsKey]);
+
+  useEffect(() => {
+    if (editingIngredient) {
+      setName(editingIngredient.name);
+      setPurchaseAmount(editingIngredient.purchaseAmount);
+      setUnit(editingIngredient.unit);
+      setTotalPrice(editingIngredient.totalPrice);
+      setYieldPercent(editingIngredient.yieldPercent ?? 100);
+      setSelectedSupplierId(editingIngredient.supplierId || "sup_1");
+    } else {
+      setName("");
+      setPurchaseAmount("");
+      setUnit("g");
+      setTotalPrice("");
+      setYieldPercent(100);
+      setSelectedSupplierId(activeSupplierId === "all" ? (suppliers[1]?.id || "sup_1") : activeSupplierId);
     }
-  }, [renamingCategory]);
+  }, [editingIngredient, isModalOpen]);
 
-  // Clear selection when leaving a category
-  useEffect(() => { setSelectedIds(new Set()); setMoveTargetCategoryId(""); }, [selectedCategoryId]);
-
-  // ── Handlers ──────────────────────────────────────────────────────────────
-  const openNewItem = () => { setEditingItem(null); setIsModalOpen(true); };
-  const openEditItem = (item: Ingredient) => { setEditingItem(item); setIsModalOpen(true); };
-  const closeModal = () => { setIsModalOpen(false); setEditingItem(null); };
-  const openBulkModal = () => { setBulkText(""); setIsBulkModalOpen(true); };
-  const closeBulkModal = () => { setIsBulkModalOpen(false); setBulkText(""); };
-
-  const handleSelectCategory = (id: number) => { setSelectedCategoryId(id); setSearchQuery(""); };
-  const handleBack = () => { setSelectedCategoryId(null); setSearchQuery(""); };
-
-  const openRename = (e: React.MouseEvent, cat: Category) => { e.stopPropagation(); setRenamingCategory(cat); };
-  const handleRenameSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!renamingCategory || !renameValue.trim()) return;
-    renameCategory({
-      id: renamingCategory.id,
-      data: { name: renameValue.trim(), emoji: renameEmojiValue.trim() || "📦" },
-    });
+  const calculateCostPerGram = (amt: number, u: string, price: number, yPercent: number) => {
+    if (!amt || amt <= 0 || !price || price <= 0) return 0;
+    let rawGrams = amt;
+    if (u === "kg" || u === "L") rawGrams = amt * 1000;
+    
+    const validGrams = rawGrams * ((yPercent || 100) / 100);
+    return validGrams > 0 ? price / validGrams : price / rawGrams;
   };
 
-  const openCreateCategory = () => { setNewCatName(""); setNewCatEmoji("📦"); setIsCreateCategoryOpen(true); };
-  const handleCreateCategorySubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCatName.trim()) return;
-    createCategoryMutation({ data: { name: newCatName.trim(), emoji: newCatEmoji.trim() || "📦" } });
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingIngredient(null);
   };
 
-  const handleDeleteCategoryClick = (e: React.MouseEvent, cat: Category) => {
+  const handleSaveSupplier = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supplierNameInput.trim()) return;
+
+    if (editingSupplier) {
+      setSuppliers(suppliers.map(s => s.id === editingSupplier.id ? { ...s, name: supplierNameInput } : s));
+    } else {
+      const newSup: Supplier = { id: `sup_${Date.now()}`, name: supplierNameInput };
+      setSuppliers([...suppliers, newSup]);
+    }
+    setIsSupplierModalOpen(false);
+    setEditingSupplier(null);
+    setSupplierNameInput("");
+  };
+
+  const handleDeleteSupplier = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const count = countByCategory[cat.name] ?? 0;
-    if (count === 0) {
-      deleteCategory({ id: cat.id });
-    } else {
-      setDeletingCategory(cat);
+    if (id === "all") return;
+    if (confirm("Delete this vendor folder?")) {
+      setSuppliers(suppliers.filter(s => s.id !== id));
+      if (activeSupplierId === id) setActiveSupplierId("all");
     }
   };
-  const confirmDeleteCategory = () => {
-    if (deletingCategory) deleteCategory({ id: deletingCategory.id });
-  };
 
-  const handleIngredientSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ingName.trim() || !ingWeight || !ingPrice) return;
-    const yp = Math.min(100, Math.max(1, parseFloat(ingYield) || 100));
-    const data = { name: ingName, category: ingCategory || selectedCategory?.name || "Other", unit: ingUnit, purchaseWeightGrams: parseFloat(ingWeight), purchasePrice: parseFloat(ingPrice), yieldPercentage: yp };
-    if (editingItem) updateItem({ id: editingItem.id, data });
-    else createItem({ data });
+    if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
+
+    const amt = Number(purchaseAmount);
+    const prc = Number(totalPrice);
+    const yP = yieldPercent === "" ? 100 : Number(yieldPercent);
+    const costG = calculateCostPerGram(amt, unit, prc, yP);
+
+    if (editingIngredient) {
+      setIngredients(ingredients.map(item => 
+        item.id === editingIngredient.id ? { ...item, name, purchaseAmount: amt, unit, totalPrice: prc, yieldPercent: yP, costPerGram: costG, supplierId: selectedSupplierId } : item
+      ));
+    } else {
+      setIngredients([...ingredients, { id: Date.now().toString(), name, purchaseAmount: amt, unit, totalPrice: prc, yieldPercent: yP, costPerGram: costG, supplierId: selectedSupplierId }]);
+    }
+    closeModal();
   };
 
-  const handleBulkSubmit = async () => {
+  const handleBulkSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkText.trim()) return;
+
     const lines = bulkText.split("\n");
-    const failedLines: number[] = [];
-    let createdCount = 0, updatedCount = 0;
-    setIsBulkProcessing(true);
-    for (let i = 0; i < lines.length; i++) {
-      if (!lines[i].trim()) continue;
-      const parsed = parseBulkLine(lines[i]);
-      if (!parsed) { failedLines.push(i + 1); continue; }
-      try {
-        const existing = ingredients?.find((ing) => ing.name.trim().toLowerCase() === parsed.name.trim().toLowerCase());
-        const fullData = { ...parsed, category: selectedCategory?.name ?? "Other" };
-        const fullDataWithYield = { ...fullData, yieldPercentage: existing?.yieldPercentage ?? 100 };
-        if (existing) { await updateItemAsync({ id: existing.id, data: fullDataWithYield }); updatedCount++; }
-        else { await createItemAsync({ data: { ...fullData, yieldPercentage: 100 } }); createdCount++; }
-      } catch { failedLines.push(i + 1); }
-    }
-    await queryClient.invalidateQueries({ queryKey: getListIngredientsQueryKey() });
-    setIsBulkProcessing(false);
-    const total = createdCount + updatedCount;
-    if (total > 0) {
-      const parts: string[] = [];
-      if (createdCount > 0) parts.push(`${createdCount} added`);
-      if (updatedCount > 0) parts.push(`${updatedCount} updated`);
-      toast({ title: `${total} ingredient${total > 1 ? "s" : ""} processed`, description: `${parts.join(", ")} in ${selectedCategory?.name}.` });
-    }
-    if (failedLines.length > 0) toast({ title: `${failedLines.length} line${failedLines.length > 1 ? "s" : ""} skipped`, description: `Could not parse line${failedLines.length > 1 ? "s" : ""} ${failedLines.join(", ")}.`, variant: "destructive" });
-    closeBulkModal();
-  };
+    const newItems: MasterIngredient[] = [];
+    const targetSup = activeSupplierId === "all" ? (suppliers[1]?.id || "sup_1") : activeSupplierId;
 
-  const handleDelete = (id: number) => {
-    if (window.confirm("Delete this ingredient? This may affect existing recipes.")) deleteItem({ id });
-  };
+    lines.forEach((line, index) => {
+      const parts = line.trim().split(/,|\t|\s+/).map(p => p.trim()).filter(Boolean);
+      if (parts.length >= 3) {
+        const itemName = parts[0];
+        const match = parts[1].toLowerCase().match(/([0-9.]+)\s*([a-z]+)?/);
+        const amt = match ? parseFloat(match[1]) || 1 : 1;
+        const u = match && match[2] ? match[2] : "g";
+        const priceNum = parseFloat(parts[2].replace(/[^0-9.]/g, "")) || 0;
+        const yP = parts[3] ? parseFloat(parts[3].replace(/[^0-9.]/g, "")) || 100 : 100;
 
-  const toggleSelectAll = () => {
-    if (allVisibleSelected) setSelectedIds(new Set());
-    else setSelectedIds(new Set(categoryIngredients.map((i) => i.id)));
-  };
-
-  const toggleSelectId = (id: number) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+        newItems.push({
+          id: (Date.now() + index).toString(),
+          name: itemName,
+          purchaseAmount: amt,
+          unit: u,
+          totalPrice: priceNum,
+          yieldPercent: yP,
+          costPerGram: calculateCostPerGram(amt, u, priceNum, yP),
+          supplierId: targetSup
+        });
+      }
     });
+
+    if (newItems.length > 0) {
+      setIngredients(prev => [...prev, ...newItems]);
+      alert(`${newItems.length} items added successfully.`);
+      setBulkText("");
+      setIsBulkModalOpen(false);
+    }
   };
 
-  const handleBulkMove = () => {
-    if (!moveTargetCategoryId || selectedIds.size === 0) return;
-    const targetCat = (categories ?? []).find((c) => c.id === parseInt(moveTargetCategoryId));
-    if (!targetCat) return;
-    bulkMove({ data: { ids: Array.from(selectedIds), targetCategory: targetCat.name } });
+  // 폴더와 재료가 완벽하게 맵핑되는 백업 파일 Import 로직
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+
+        // 1. 공급업체(폴더) 데이터 추출 및 매핑 딕셔너리 생성
+        let importedSuppliers: Supplier[] = [{ id: "all", name: "All Vendors" }];
+        const nameToIdMap: { [key: string]: string } = {}; // 폴더 이름 -> 새 생성 ID 맵핑
+
+        // 파일 내에 suppliers 또는 categories가 있는 경우 탐색
+        const rawSuppliers = json.suppliers || json.categories || json[`ingredient_suppliers`] || [];
+        
+        if (Array.isArray(rawSuppliers) && rawSuppliers.length > 0) {
+          rawSuppliers.forEach((sup: any, idx: number) => {
+            const supName = sup.name || String(sup);
+            if (supName !== "All Vendors" && supName !== "all") {
+              const newId = `sup_${Date.now()}_${idx}`;
+              nameToIdMap[supName] = newId;
+              // 기존 구 ID와도 매칭될 수 있도록 기록
+              if (sup.id) nameToIdMap[sup.id] = newId;
+              
+              importedSuppliers.push({ id: newId, name: supName });
+            }
+          });
+        }
+
+        // 만약 폴더 목록이 따로 없다면 재료 데이터 안에서 공급업체 이름들을 추출
+        const rawIngredients = json.ingredients || json[Object.keys(json).find(k => k.includes("master_ingredients")) || ""] || [];
+        
+        if (importedSuppliers.length === 1 && Array.isArray(rawIngredients)) {
+          const uniqueCats = Array.from(new Set(rawIngredients.map((i: any) => i.category || i.supplierName || i.supplierId || "General"))) as string[];
+          uniqueCats.forEach((cName, idx) => {
+            if (cName && cName !== "all" && cName !== "All Vendors") {
+              const newId = `sup_auto_${idx}_${Date.now()}`;
+              nameToIdMap[cName] = newId;
+              nameToIdMap[String(idx)] = newId;
+              importedSuppliers.push({ id: newId, name: String(cName) });
+            }
+          });
+        }
+
+        if (importedSuppliers.length > 1) {
+          setSuppliers(importedSuppliers);
+        }
+
+        // 2. 마스터 원재료 파싱 및 올바른 폴더 ID 연결
+        if (Array.isArray(rawIngredients) && rawIngredients.length > 0) {
+          const importedIngredients: MasterIngredient[] = rawIngredients.map((ing: any, i: number) => {
+            const amt = parseFloat(ing.purchaseAmount || ing.purchaseWeightGrams || ing.quantity || 1000);
+            const price = parseFloat(ing.totalPrice || ing.purchasePrice || ing.price || 0);
+            const yieldP = parseFloat(ing.yieldPercent || ing.yieldPercentage || 100);
+            const u = ing.unit || "g";
+            const itemName = ing.name || `Ingredient_${i + 1}`;
+
+            // 공급업체 ID 또는 카테고리 이름으로 올바른 폴더 ID 찾기
+            let targetSupId = "sup_1";
+            const fileSupRef = ing.supplierId || ing.category;
+            
+            if (fileSupRef && nameToIdMap[fileSupRef]) {
+              targetSupId = nameToIdMap[fileSupRef];
+            } else if (importedSuppliers.length > 1) {
+              targetSupId = importedSuppliers[1].id; // 첫 번째 커스텀 폴더 기본 지정
+            }
+
+            return {
+              id: String(ing.id || Date.now() + i),
+              name: itemName,
+              purchaseAmount: amt,
+              unit: u,
+              totalPrice: price,
+              yieldPercent: yieldP,
+              costPerGram: calculateCostPerGram(amt, u, price, yieldP),
+              supplierId: targetSupId
+            };
+          });
+
+          setIngredients(importedIngredients);
+          localStorage.setItem(ingredientsKey, JSON.stringify(importedIngredients));
+          alert(`Successfully restored ${importedIngredients.length} master ingredients with folders!`);
+          window.location.reload();
+        } else {
+          alert("No ingredient items found in file.");
+        }
+      } catch (err) {
+        alert("Failed to parse the backup file.");
+        console.error(err);
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const isLoading = loadingIngredients || loadingCategories;
+  const handleExportData = () => {
+    try {
+      const exportObject: { [key: string]: any } = {};
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.includes(userPrefix) || key === "stores" || key.startsWith("store_"))) {
+          const rawValue = localStorage.getItem(key);
+          try {
+            exportObject[key] = rawValue ? JSON.parse(rawValue) : null;
+          } catch {
+            exportObject[key] = rawValue;
+          }
+        }
+      }
 
-  // ── Shared rename modal ───────────────────────────────────────────────────
-  const renameModal = (
-    <Modal isOpen={!!renamingCategory} onClose={() => setRenamingCategory(null)} title={`Edit "${renamingCategory?.name}"`}>
-      <form onSubmit={handleRenameSubmit} className="space-y-5">
-        <div>
-          <label className="block text-sm font-medium text-zinc-700 mb-1.5">Emoji</label>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-14 h-14 rounded-xl border border-zinc-200 bg-zinc-50 text-3xl shrink-0">
-              {renameEmojiValue || "📦"}
-            </div>
-            <Input
-              value={renameEmojiValue}
-              onChange={(e) => setRenameEmojiValue(e.target.value)}
-              placeholder="Type or paste an emoji"
-              className="flex-1"
-            />
-          </div>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-zinc-700 mb-1.5">Category name</label>
-          <Input ref={renameInputRef} value={renameValue} onChange={(e) => setRenameValue(e.target.value)} placeholder="e.g. Fresh Produce" required />
-          <p className="text-xs text-zinc-500 mt-1.5">All existing ingredients will be updated automatically.</p>
-        </div>
-        <div className="pt-4 flex justify-end gap-3 border-t border-zinc-100">
-          <Button type="button" variant="ghost" onClick={() => setRenamingCategory(null)} disabled={isRenaming}>Cancel</Button>
-          <Button type="submit" disabled={isRenaming || !renameValue.trim()}>{isRenaming ? "Saving…" : "Save Changes"}</Button>
-        </div>
-      </form>
-    </Modal>
-  );
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportObject, null, 2));
+      const downloadAnchor = document.createElement("a");
+      const today = new Date().toISOString().slice(0, 10);
+      
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `recipe-backup-${currentUser?.username}-${today}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
 
-  // ── Create category modal ─────────────────────────────────────────────────
-  const createCategoryModal = (
-    <Modal isOpen={isCreateCategoryOpen} onClose={() => setIsCreateCategoryOpen(false)} title="New Category">
-      <form onSubmit={handleCreateCategorySubmit} className="space-y-5">
-        <div>
-          <label className="block text-sm font-medium text-zinc-700 mb-1.5">Emoji</label>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-14 h-14 rounded-xl border border-zinc-200 bg-zinc-50 text-3xl shrink-0">
-              {newCatEmoji || "📦"}
-            </div>
-            <Input
-              value={newCatEmoji}
-              onChange={(e) => setNewCatEmoji(e.target.value)}
-              placeholder="Type or paste an emoji"
-              className="flex-1"
-            />
-          </div>
-          <p className="text-xs text-zinc-500 mt-1.5">Tip: open your OS emoji picker with ⌘+Ctrl+Space (Mac) or Win+. (Windows).</p>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-zinc-700 mb-1.5">Category name</label>
-          <Input
-            value={newCatName}
-            onChange={(e) => setNewCatName(e.target.value)}
-            placeholder="e.g. Fresh Produce"
-            required
-            autoFocus
-          />
-        </div>
-        <div className="pt-4 flex justify-end gap-3 border-t border-zinc-100">
-          <Button type="button" variant="ghost" onClick={() => setIsCreateCategoryOpen(false)} disabled={isCreatingCategory}>Cancel</Button>
-          <Button type="submit" disabled={isCreatingCategory || !newCatName.trim()}>
-            {isCreatingCategory ? "Creating…" : "Create Category"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
+      alert("Backup JSON file exported successfully!");
+    } catch (e) {
+      alert("Failed to export backup file.");
+      console.error(e);
+    }
+  };
 
-  // ── Delete category confirmation modal ────────────────────────────────────
-  const deleteCount = deletingCategory ? (countByCategory[deletingCategory.name] ?? 0) : 0;
-  const deleteCategoryModal = (
-    <Modal isOpen={!!deletingCategory} onClose={() => setDeletingCategory(null)} title="Delete Category?">
-      <div className="space-y-5">
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-red-50 border border-red-200">
-          <Trash2 className="w-5 h-5 text-red-500 mt-0.5 shrink-0" />
-          <p className="text-sm text-red-800">
-            <strong>"{deletingCategory?.name}"</strong> contains{" "}
-            <strong>{deleteCount} ingredient{deleteCount !== 1 ? "s" : ""}</strong>.
-            All of them will be permanently deleted along with the category.
-          </p>
-        </div>
-        <p className="text-sm text-zinc-500">This cannot be undone. Consider moving ingredients to another category first.</p>
-        <div className="pt-2 flex justify-end gap-3 border-t border-zinc-100">
-          <Button type="button" variant="ghost" onClick={() => setDeletingCategory(null)} disabled={isDeleting}>Cancel</Button>
-          <Button variant="destructive" onClick={confirmDeleteCategory} disabled={isDeleting}>
-            {isDeleting ? "Deleting…" : `Delete & Remove ${deleteCount} Ingredient${deleteCount !== 1 ? "s" : ""}`}
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
+  const handleDelete = (id: string) => {
+    if (confirm("Delete this ingredient?")) setIngredients(ingredients.filter(i => i.id !== id));
+  };
 
-  // ── Category Grid ─────────────────────────────────────────────────────────
-  if (selectedCategoryId === null) {
-    return (
-      <div className="p-3 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-zinc-900">Master Ingredients</h1>
-            <p className="text-xs sm:text-sm text-zinc-500 mt-0.5">Shared ingredient database across all stores. Select a category to manage.</p>
-          </div>
-          <Button onClick={openCreateCategory} className="w-full sm:w-auto">
-            <Plus className="w-4 h-4 mr-2" /> New Category
-          </Button>
-        </div>
-
-        {isLoading ? (
-          <div className="text-center py-10 text-zinc-400 text-sm">Loading…</div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
-            {(categories ?? []).map((cat, idx) => {
-              const { bg, border } = categoryColor(idx);
-              const count = countByCategory[cat.name] ?? 0;
-              return (
-                <div
-                  key={cat.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectCategory(cat.id)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSelectCategory(cat.id)}
-                  className={`group relative text-left rounded-xl border ${bg} ${border} p-3 sm:p-4 hover:shadow-md transition-all duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-zinc-900`}
-                >
-                  {/* Card action buttons — appear on hover */}
-                  <div className="absolute top-2 right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => openRename(e, cat)}
-                      className="p-1 rounded-lg hover:bg-white/70 text-zinc-400 hover:text-zinc-700 transition-colors"
-                      title="Rename category"
-                    >
-                      <Pencil className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteCategoryClick(e, cat)}
-                      className="p-1 rounded-lg hover:bg-white/70 text-zinc-400 hover:text-red-600 transition-colors"
-                      title="Delete category"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-
-                  <div className="text-2xl mb-1.5">{cat.emoji}</div>
-                  <div className="font-semibold text-zinc-900 text-xs sm:text-sm pr-8 leading-snug">{cat.name}</div>
-                  <div className="text-xs text-zinc-500 mt-0.5">
-                    {count === 0 ? "No ingredients" : `${count} ingredient${count > 1 ? "s" : ""}`}
-                  </div>
-                  <div className="mt-2 text-xs font-medium text-zinc-400 group-hover:text-zinc-700 transition-colors">
-                    Manage →
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Virtual "Uncategorized" card — only shown when there are orphaned ingredients */}
-            {orphanedIngredients.length > 0 && (
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => handleSelectCategory(-1)}
-                onKeyDown={(e) => e.key === "Enter" && handleSelectCategory(-1)}
-                className="group relative text-left rounded-xl border bg-zinc-100 border-zinc-300 border-dashed p-3 sm:p-4 hover:shadow-md transition-all duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-zinc-900"
-              >
-                <div className="text-2xl mb-1.5">📂</div>
-                <div className="font-semibold text-zinc-500 text-xs sm:text-sm">Uncategorized</div>
-                <div className="text-xs text-zinc-400 mt-0.5">
-                  {orphanedIngredients.length} ingredient{orphanedIngredients.length > 1 ? "s" : ""} need a category
-                </div>
-                <div className="mt-2 text-xs font-medium text-zinc-400 group-hover:text-zinc-600 transition-colors">
-                  Move to a category →
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {renameModal}
-        {deleteCategoryModal}
-        {createCategoryModal}
-      </div>
-    );
-  }
-
-  // ── Category Detail ───────────────────────────────────────────────────────
-  const inCatTotal = isUncategorizedView
-    ? orphanedIngredients.length
-    : (ingredients ?? []).filter((i) => i.category === selectedCategory?.name).length;
-  const catIndex = isUncategorizedView ? -1 : (categories ?? []).findIndex((c) => c.id === selectedCategoryId);
-  const { bg: catBg, border: catBorder } = catIndex >= 0 ? categoryColor(catIndex) : { bg: "bg-zinc-100", border: "border-zinc-300" };
-
-  const detailEmoji = isUncategorizedView ? "📂" : selectedCategory?.emoji ?? "";
-  const detailName  = isUncategorizedView ? "Uncategorized" : selectedCategory?.name ?? "";
+  const filteredIngredients = ingredients.filter(item => {
+    const matchesSupplier = activeSupplierId === "all" || item.supplierId === activeSupplierId;
+    const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
+    return matchesSupplier && matchesSearch;
+  });
 
   return (
-    <div className="p-3 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <button onClick={handleBack} className="flex items-center gap-1 text-xs sm:text-sm text-zinc-500 hover:text-zinc-900 transition-colors">
-            <ChevronLeft className="w-3.5 h-3.5" /> All Categories
-          </button>
-          <span className="text-zinc-300">|</span>
-          <div className="flex items-center gap-1.5">
-            <span className="text-xl sm:text-2xl">{detailEmoji}</span>
-            <h1 className="text-lg sm:text-xl font-bold text-zinc-900">{detailName}</h1>
-            <span className="text-xs sm:text-sm text-zinc-400 font-normal">({inCatTotal})</span>
+    <div className="p-6 max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link href="/"><Button variant="outline" size="icon"><ArrowLeft size={16} /></Button></Link>
+          <div>
+            <h1 className="text-2xl font-bold">Master Ingredients ({currentUser?.username})</h1>
+            <p className="text-gray-500 text-sm">Organized by vendor folders with yield % adjustment.</p>
           </div>
-          {!isUncategorizedView && selectedCategory && (
-            <button
-              onClick={(e) => openRename(e, selectedCategory)}
-              className="ml-1 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
-              title="Rename category"
-            >
-              <Pencil className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {isUncategorizedView && (
-            <span className="ml-2 text-xs text-zinc-400 bg-zinc-100 px-2 py-1 rounded-full">
-              Select items below and move them to a category
-            </span>
-          )}
         </div>
-        {!isUncategorizedView && (
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-            <Button variant="outline" onClick={openBulkModal} className="w-full sm:w-auto"><List className="w-4 h-4 mr-2" /> Bulk Add</Button>
-            <Button onClick={openNewItem} className="w-full sm:w-auto"><Plus className="w-4 h-4 mr-2" /> Add Ingredient</Button>
-          </div>
-        )}
+
+        <div className="flex items-center gap-2">
+          <input type="file" accept=".json" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+          
+          <Button variant="outline" onClick={handleExportData} className="flex items-center gap-2 bg-green-50 text-green-700 border-green-200 hover:bg-green-100">
+            <Download size={16} /> Export JSON
+          </Button>
+
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100">
+            <Upload size={16} /> Import JSON
+          </Button>
+
+          <Button variant="outline" onClick={() => setIsBulkModalOpen(true)} className="flex items-center gap-2"><Layers size={16} /> Bulk Input</Button>
+          <Button onClick={() => { setEditingIngredient(null); setIsModalOpen(true); }} className="flex items-center gap-2"><Plus size={16} /> Add Item</Button>
+        </div>
       </div>
 
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
-        <input
-          type="search"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder={`Search in ${detailName}…`}
-          className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent"
-        />
+      {/* 공급업체 폴더 탭 영역 */}
+      <div className="space-y-2 border-b pb-4">
+        <div className="flex justify-between items-center">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Vendor Folders</p>
+          <Button variant="ghost" size="sm" onClick={() => { setEditingSupplier(null); setSupplierNameInput(""); setIsSupplierModalOpen(true); }} className="text-xs flex items-center gap-1 text-blue-600">
+            <FolderPlus size={14} /> New Vendor Folder
+          </Button>
+        </div>
+
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {suppliers.map((sup) => (
+            <div
+              key={sup.id}
+              onClick={() => setActiveSupplierId(sup.id)}
+              className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 cursor-pointer border transition-all ${
+                activeSupplierId === sup.id ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-700 border-gray-200 hover:border-gray-400"
+              }`}
+            >
+              <Folder size={16} />
+              <span>{sup.name}</span>
+              {sup.id !== "all" && (
+                <div className="flex gap-1 ml-1">
+                  <button onClick={(e) => { e.stopPropagation(); setEditingSupplier(sup); setSupplierNameInput(sup.name); setIsSupplierModalOpen(true); }} className="hover:text-blue-400">
+                    <Edit size={12} />
+                  </button>
+                  <button onClick={(e) => handleDeleteSupplier(sup.id, e)} className="hover:text-red-400">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Bulk-move action bar */}
-      {selectedIds.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 px-4 py-3 rounded-xl bg-zinc-900 text-white">
-          <div className="flex items-center gap-2 shrink-0">
-            <MoveRight className="w-4 h-4" />
-            <span className="text-sm font-medium">{selectedIds.size} selected</span>
-            <span className="text-zinc-400 text-sm">→</span>
-          </div>
-          <select
-            value={moveTargetCategoryId}
-            onChange={(e) => setMoveTargetCategoryId(e.target.value)}
-            className="flex-1 min-w-[120px] rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white"
-          >
-            <option value="">Move to…</option>
-            {otherCategories.map((c) => (
-              <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>
-            ))}
-          </select>
-          <div className="flex items-center gap-2 shrink-0">
-            <Button
-              size="sm"
-              onClick={handleBulkMove}
-              disabled={!moveTargetCategoryId || isBulkMoving}
-              className="bg-white text-zinc-900 hover:bg-zinc-100"
-            >
-              {isBulkMoving ? "Moving…" : "Move"}
-            </Button>
-            <button
-              onClick={() => { setSelectedIds(new Set()); setMoveTargetCategoryId(""); }}
-              className="text-zinc-400 hover:text-white text-sm transition-colors"
-            >
-              Cancel
-            </button>
+      {/* 검색 */}
+      <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-gray-200">
+        <Search size={18} className="text-gray-400 ml-2" />
+        <input type="text" placeholder="Search ingredient..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full p-2 outline-none text-sm" />
+      </div>
+
+      {/* 카드 리스트 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filteredIngredients.map((item) => {
+          const supName = suppliers.find(s => s.id === item.supplierId)?.name || "General";
+          const yP = item.yieldPercent ?? 100;
+          const rawUnitCost = item.totalPrice / (item.purchaseAmount || 1);
+          const effectiveUnitCost = rawUnitCost / (yP / 100);
+
+          return (
+            <Card key={item.id} className="p-4 flex flex-col justify-between space-y-3">
+              <div>
+                <div className="flex justify-between items-start">
+                  <span className="text-xs font-semibold px-2 py-0.5 bg-gray-100 rounded text-gray-600 flex items-center gap-1">
+                    <Folder size={12} /> {supName}
+                  </span>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="icon" onClick={() => { setEditingIngredient(item); setIsModalOpen(true); }}><Edit size={15} /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleDelete(item.id)}><Trash2 size={15} className="text-red-500" /></Button>
+                  </div>
+                </div>
+                <h3 className="font-bold text-lg mt-1 flex items-center gap-2"><Package size={18} className="text-gray-500" /> {item.name}</h3>
+              </div>
+
+              <div className="pt-2 border-t flex justify-between items-end">
+                <div>
+                  <p className="text-xs text-gray-400">Qty: {item.purchaseAmount}{item.unit} (${item.totalPrice.toFixed(2)})</p>
+                  <p className="text-xs text-gray-600 font-medium flex items-center gap-1">
+                    <Percent size={11} className="text-blue-600" /> Yield: <span className="font-bold text-gray-900">{yP}%</span>
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-gray-400 line-through">${rawUnitCost.toFixed(4)}/{item.unit}</p>
+                  <span className="text-base font-bold text-blue-600">
+                    ${effectiveUnitCost.toFixed(4)} / {item.unit}
+                  </span>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* 공급업체 모달 */}
+      {isSupplierModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full space-y-4">
+            <h2 className="text-lg font-bold">{editingSupplier ? "Rename Vendor Folder" : "New Vendor Folder"}</h2>
+            <form onSubmit={handleSaveSupplier} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Vendor / Folder Name</label>
+                <Input value={supplierNameInput} onChange={(e) => setSupplierNameInput(e.target.value)} placeholder="e.g. Mr Kim, Oceania" required />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setIsSupplierModalOpen(false)}>Cancel</Button>
+                <Button type="submit">Save</Button>
+              </div>
+            </form>
           </div>
         </div>
       )}
 
-      {/* Table */}
-      <Card className="overflow-hidden">
-        {inCatTotal === 0 ? (
-          <div className="text-center py-10 sm:py-14 px-4">
-            <div className="text-4xl sm:text-5xl mb-3">{detailEmoji}</div>
-            <h3 className="text-base font-semibold text-zinc-900">No ingredients in {detailName}</h3>
-            {!isUncategorizedView && (
-              <>
-                <p className="text-zinc-500 mt-1 mb-4 text-sm">Add your first ingredient to this category.</p>
-                <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
-                  <Button onClick={openNewItem} variant="outline" className="w-full sm:w-auto">Add Ingredient</Button>
-                  <Button onClick={openBulkModal} variant="outline" className="w-full sm:w-auto"><List className="w-4 h-4 mr-2" /> Bulk Add</Button>
-                </div>
-              </>
-            )}
-          </div>
-        ) : categoryIngredients.length === 0 ? (
-          <div className="text-center py-8 px-4">
-            <PackageOpen className="w-8 h-8 text-zinc-300 mx-auto mb-2" />
-            <p className="text-zinc-500 text-sm">No ingredients match <strong>"{searchQuery}"</strong></p>
-          </div>
-        ) : (
-          <>
-            {/* Mobile card list */}
-            <div className="md:hidden divide-y divide-zinc-100">
-              {categoryIngredients.map((item) => (
-                <div key={item.id} className={`px-4 py-3 flex items-start gap-3 ${selectedIds.has(item.id) ? "bg-zinc-50" : ""}`}>
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(item.id)}
-                    onChange={() => toggleSelectId(item.id)}
-                    className="rounded border-zinc-300 accent-zinc-900 cursor-pointer mt-0.5 shrink-0"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-zinc-900 text-sm truncate">{item.name}</p>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
-                      <span className="text-xs text-zinc-500">{formatAmount(item.purchaseWeightGrams, item.unit)}</span>
-                      <span className="text-xs text-zinc-500">{formatCurrency(item.purchasePrice)}</span>
-                      <span className="text-xs text-zinc-400">{formatCurrency(item.costPerKg)}/{largeUnitLabel(item.unit)}</span>
-                    </div>
-                    {item.yieldPercentage < 100 && (
-                      <span className="inline-flex mt-1 items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                        {item.yieldPercentage}% yield
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <Button variant="ghost" size="icon" onClick={() => openEditItem(item)} className="h-8 w-8 text-zinc-500">
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(item.id)} className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50">
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {/* Desktop table */}
-            <div className="hidden md:block overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-10">
-                      <input
-                        type="checkbox"
-                        checked={allVisibleSelected}
-                        onChange={toggleSelectAll}
-                        className="rounded border-zinc-300 accent-zinc-900 cursor-pointer"
-                        title="Select all"
-                      />
-                    </TableHead>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Purchase Amount</TableHead>
-                    <TableHead>Yield %</TableHead>
-                    <TableHead>Usable Weight</TableHead>
-                    <TableHead>Purchase Price</TableHead>
-                    <TableHead>Unit Cost</TableHead>
-                    <TableHead>Bulk Cost</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {categoryIngredients.map((item) => (
-                    <TableRow key={item.id} className={selectedIds.has(item.id) ? "bg-zinc-50" : undefined}>
-                      <TableCell>
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(item.id)}
-                          onChange={() => toggleSelectId(item.id)}
-                          className="rounded border-zinc-300 accent-zinc-900 cursor-pointer"
-                        />
-                      </TableCell>
-                      <TableCell className="font-medium text-zinc-900">{item.name}</TableCell>
-                      <TableCell className="text-zinc-600">{formatAmount(item.purchaseWeightGrams, item.unit)}</TableCell>
-                      <TableCell>
-                        {item.yieldPercentage < 100 ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                            {item.yieldPercentage}%
-                          </span>
-                        ) : (
-                          <span className="text-zinc-400 text-xs">100%</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-zinc-600">
-                        {item.yieldPercentage < 100 ? (
-                          <span className="font-medium text-amber-700">{formatAmount(item.usableWeightGrams, item.unit)}</span>
-                        ) : (
-                          <span className="text-zinc-400 text-xs">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-zinc-600">{formatCurrency(item.purchasePrice)}</TableCell>
-                      <TableCell className="text-zinc-600">{formatCurrency(item.costPerGram)}/{unitLabel(item.unit)}</TableCell>
-                      <TableCell className="font-semibold text-zinc-900">{formatCurrency(item.costPerKg)}/{largeUnitLabel(item.unit)}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <Button variant="ghost" size="icon" onClick={() => openEditItem(item)} className="h-8 w-8 text-zinc-500">
-                            <Edit className="w-4 h-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" onClick={() => handleDelete(item.id)} className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50">
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+      {/* 단일 추가 모달 */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-md w-full space-y-4">
+            <h2 className="text-lg font-bold">{editingIngredient ? "Edit Item" : "Add Item"}</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Ingredient Name</label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Pork Belly" required />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Vendor / Folder</label>
+                <select value={selectedSupplierId} onChange={(e) => setSelectedSupplierId(e.target.value)} className="w-full border rounded-md p-2 text-sm bg-white h-10">
+                  {suppliers.filter(s => s.id !== "all").map(sup => (
+                    <option key={sup.id} value={sup.id}>{sup.name}</option>
                   ))}
-                </TableBody>
-              </Table>
-            </div>
-          </>
-        )}
-      </Card>
+                </select>
+              </div>
 
-      {renameModal}
-      {deleteCategoryModal}
-      {createCategoryModal}
+              <div className="grid grid-cols-3 gap-2">
+                <div><label className="block text-sm font-medium mb-1">Qty</label><Input type="number" step="0.01" value={purchaseAmount} onChange={(e) => setPurchaseAmount(e.target.value === "" ? "" : Number(e.target.value))} placeholder="1000" required /></div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Unit</label>
+                  <select value={unit} onChange={(e) => setUnit(e.target.value)} className="w-full border rounded-md p-2 text-sm bg-white h-10">
+                    <option value="g">g</option><option value="ml">ml</option><option value="kg">kg</option><option value="L">L</option><option value="EA">EA</option>
+                  </select>
+                </div>
+                <div><label className="block text-sm font-medium mb-1">Total Price ($)</label><Input type="number" step="0.01" value={totalPrice} onChange={(e) => setTotalPrice(e.target.value === "" ? "" : Number(e.target.value))} placeholder="14.00" required /></div>
+              </div>
 
-      {/* Single add/edit ingredient modal */}
-      <Modal isOpen={isModalOpen} onClose={closeModal} title={editingItem ? "Edit Ingredient" : `Add to ${detailName}`}>
-        <form onSubmit={handleIngredientSubmit} className="space-y-5">
-          {editingItem ? (
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1.5">Category</label>
-              <select
-                value={ingCategory}
-                onChange={(e) => setIngCategory(e.target.value)}
-                className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900"
-              >
-                {(categories ?? []).map((c) => (
-                  <option key={c.id} value={c.name}>{c.emoji} {c.name}</option>
-                ))}
-              </select>
-            </div>
-          ) : (
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${catBg} border ${catBorder}`}>
-              <span className="text-lg">{detailEmoji}</span>
-              <span className="text-sm font-medium text-zinc-700">{detailName}</span>
-            </div>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Ingredient Name</label>
-            <Input value={ingName} onChange={(e) => setIngName(e.target.value)} placeholder="e.g. Cherry Tomatoes" required autoFocus />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Unit Type</label>
-            <div className="flex rounded-lg border border-zinc-200 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setIngUnit("g")}
-                className={`flex-1 py-2 text-sm font-medium transition-colors ${ingUnit === "g" ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50"}`}
-              >
-                ⚖️ Weight (g / kg)
-              </button>
-              <button
-                type="button"
-                onClick={() => setIngUnit("ml")}
-                className={`flex-1 py-2 text-sm font-medium transition-colors ${ingUnit === "ml" ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50"}`}
-              >
-                💧 Volume (ml / L)
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">
-              Total Purchase Amount ({ingUnit === "ml" ? "ml" : "g"})
-            </label>
-            <Input type="number" value={ingWeight} onChange={(e) => setIngWeight(e.target.value)} placeholder={ingUnit === "ml" ? "e.g. 1000" : "e.g. 5000"} required />
-            <p className="text-xs text-zinc-500 mt-1">{ingUnit === "ml" ? "1 L = 1000 ml" : "1 kg = 1000 g"}</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Yield %</label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                value={ingYield}
-                onChange={(e) => setIngYield(e.target.value)}
-                placeholder="100"
-                className="w-28"
-              />
-              <span className="text-sm text-zinc-500">%</span>
-              {(() => {
-                const w = parseFloat(ingWeight);
-                const y = parseFloat(ingYield);
-                if (w > 0 && y > 0 && y < 100) {
-                  const usable = w * (y / 100);
-                  return (
-                    <span className="text-sm text-amber-700 font-medium">
-                      → {ingUnit === "ml" ? (usable >= 1000 ? `${(usable / 1000).toFixed(2)}L` : `${usable.toFixed(0)}ml`) : (usable >= 1000 ? `${(usable / 1000).toFixed(2)}kg` : `${usable.toFixed(0)}g`)} usable
-                    </span>
-                  );
-                }
-                return <span className="text-xs text-zinc-400">No waste (100% usable)</span>;
-              })()}
-            </div>
-            <p className="text-xs text-zinc-500 mt-1.5">Accounts for trimming, peeling, or cooking loss. Costs are calculated on usable weight only.</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Total Purchase Price (AUD)</label>
-            <Input type="number" step="0.01" value={ingPrice} onChange={(e) => setIngPrice(e.target.value)} placeholder="e.g. 15.99" required />
-          </div>
-          <div className="pt-4 flex justify-end gap-3 border-t border-zinc-100">
-            <Button type="button" variant="ghost" onClick={closeModal}>Cancel</Button>
-            <Button type="submit" disabled={isCreating || isUpdating}>{editingItem ? "Save Changes" : "Add Ingredient"}</Button>
-          </div>
-        </form>
-      </Modal>
+              <div className="bg-blue-50 p-3 rounded-lg space-y-1">
+                <label className="block text-xs font-bold text-blue-900">Yield % (Cooked / Usable Ratio)</label>
+                <div className="flex items-center gap-2">
+                  <Input 
+                    type="number" 
+                    step="1"
+                    min="1"
+                    max="100"
+                    value={yieldPercent} 
+                    onChange={(e) => setYieldPercent(e.target.value === "" ? "" : Number(e.target.value))} 
+                    placeholder="70" 
+                    className="bg-white"
+                  />
+                  <span className="text-sm font-bold text-blue-900">%</span>
+                </div>
+              </div>
 
-      {/* Bulk add modal */}
-      <Modal isOpen={isBulkModalOpen} onClose={closeBulkModal} title={`Bulk Add to ${detailName}`}>
-        <div className="space-y-4">
-          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg ${catBg} border ${catBorder}`}>
-            <span className="text-lg">{detailEmoji}</span>
-            <span className="text-sm text-zinc-600">All entries will be added to <strong>{detailName}</strong></span>
-          </div>
-          <div>
-            <p className="text-sm text-zinc-600 mb-2">Enter one ingredient per line:</p>
-            <ul className="text-xs text-zinc-500 space-y-1 mb-3 bg-zinc-50 rounded-lg p-3 font-mono">
-              <li>Onion 10kg AUD 15000</li>
-              <li>Carrot 5kg 8,500</li>
-              <li>Spinach 500g 3200</li>
-              <li>Olive Oil 5L AUD 25.00</li>
-              <li>Cream 500ml 4.50</li>
-            </ul>
-            <p className="text-xs text-zinc-400">kg→g and L→ml auto-converted. Commas ignored.</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Ingredients</label>
-            <textarea
-              value={bulkText}
-              onChange={(e) => setBulkText(e.target.value)}
-              placeholder={"Onion 10kg AUD 15000\nCarrot 5kg 8,500\nSpinach 500g 3200"}
-              rows={9}
-              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent resize-y font-mono"
-              disabled={isBulkProcessing}
-              autoFocus
-            />
-          </div>
-          <div className="pt-4 flex justify-end gap-3 border-t border-zinc-100">
-            <Button type="button" variant="ghost" onClick={closeBulkModal} disabled={isBulkProcessing}>Cancel</Button>
-            <Button onClick={handleBulkSubmit} disabled={!bulkText.trim() || isBulkProcessing}>
-              {isBulkProcessing ? "Adding…" : "Add Ingredients"}
-            </Button>
+              <div className="flex justify-end gap-2 pt-2"><Button type="button" variant="outline" onClick={closeModal}>Cancel</Button><Button type="submit">Save</Button></div>
+            </form>
           </div>
         </div>
-      </Modal>
+      )}
+
+      {/* 벌크 모달 */}
+      {isBulkModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-lg w-full space-y-4">
+            <h2 className="text-lg font-bold">Bulk Input</h2>
+            <form onSubmit={handleBulkSubmit} className="space-y-4">
+              <textarea rows={8} value={bulkText} onChange={(e) => setBulkText(e.target.value)} placeholder="e.g. PorkBelly 1000g 14 70" className="w-full border rounded-lg p-3 text-sm font-mono outline-none" required />
+              <div className="flex justify-end gap-2 pt-2"><Button type="button" variant="outline" onClick={() => setIsBulkModalOpen(false)}>Cancel</Button><Button type="submit">Add All</Button></div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

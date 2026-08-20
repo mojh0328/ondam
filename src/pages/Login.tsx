@@ -1,92 +1,119 @@
 import { useState } from "react";
-import { Link, useLocation } from "wouter";
-import { LayoutDashboard, LogIn } from "lucide-react";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth } from "@/context/AuthContext";
+import { useLocation } from "wouter";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Lock, User, Phone, UserPlus, LogIn } from "lucide-react";
 
 export default function Login() {
-  const { login } = useAuth();
-  const [, navigate] = useLocation();
+  const { login, register } = useAuth();
+  const [, setLocation] = useLocation();
+
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [phone, setPhone] = useState("");
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setIsSubmitting(true);
-    try {
-      await login(username.trim(), password);
-      navigate("/stores");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
-      setIsSubmitting(false);
+    if (!username.trim() || !password.trim()) return;
+
+    if (isRegisterMode) {
+      if (!phone.trim()) {
+        alert("Please enter your phone number.");
+        return;
+      }
+      if (register(username, password, phone)) {
+        alert("Account created successfully!");
+        setLocation("/");
+      }
+    } else {
+      if (login(username, password)) {
+        setLocation("/");
+      }
     }
   };
 
-  const inputClass =
-    "w-full h-11 px-4 rounded-xl border border-zinc-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent transition-shadow";
-
   return (
-    <div className="min-h-full flex items-center justify-center p-4 py-12">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center space-y-3">
-          <div className="w-12 h-12 rounded-xl bg-zinc-900 text-white flex items-center justify-center mx-auto">
-            <LayoutDashboard className="w-6 h-6" />
+    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+      <Card className="max-w-md w-full p-8 space-y-6 shadow-xl bg-white rounded-2xl">
+        <div className="text-center space-y-2">
+          <div className="w-12 h-12 bg-slate-900 text-white rounded-xl flex items-center justify-center mx-auto">
+            <Lock size={24} />
           </div>
-          <div>
-            <h1 className="text-2xl font-bold text-zinc-900">Welcome back</h1>
-            <p className="text-sm text-zinc-500 mt-1">Sign in to your Restaurant Cost Calculator account</p>
-          </div>
+          <h1 className="text-2xl font-bold text-slate-900">
+            {isRegisterMode ? "Create New Account" : "Recipe Costing Sign In"}
+          </h1>
+          <p className="text-xs text-slate-500">
+            {isRegisterMode ? "Enter your details to sign up." : "Enter your username and password to log in."}
+          </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white border border-zinc-200 rounded-2xl shadow-sm p-6 space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="username" className="text-sm font-medium text-zinc-700">Username</label>
-            <input
-              id="username"
-              type="text"
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className={inputClass}
-              required
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="password" className="text-sm font-medium text-zinc-700">Password</label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={inputClass}
-              required
-            />
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-slate-700">Username</label>
+            <div className="relative">
+              <User size={16} className="absolute left-3 top-3 text-slate-400" />
+              <Input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Enter username"
+                className="pl-9"
+                required
+              />
+            </div>
           </div>
 
-          {error && (
-            <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
-              {error}
+          {isRegisterMode && (
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-700">Phone Number</label>
+              <div className="relative">
+                <Phone size={16} className="absolute left-3 top-3 text-slate-400" />
+                <Input
+                  type="text"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="e.g. 0400-000-000"
+                  className="pl-9"
+                  required
+                />
+              </div>
             </div>
           )}
 
-          <Button type="submit" className="w-full" disabled={isSubmitting}>
-            <LogIn className="w-4 h-4 mr-2" />
-            {isSubmitting ? "Signing in…" : "Sign in"}
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-slate-700">Password</label>
+            <div className="relative">
+              <Lock size={16} className="absolute left-3 top-3 text-slate-400" />
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                className="pl-9"
+                required
+              />
+            </div>
+          </div>
+
+          <Button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-lg flex items-center justify-center gap-2">
+            {isRegisterMode ? <UserPlus size={18} /> : <LogIn size={18} />}
+            {isRegisterMode ? "Sign Up" : "Sign In"}
           </Button>
         </form>
 
-        <p className="text-center text-sm text-zinc-500">
-          Don't have an account?{" "}
-          <Link href="/register" className="font-medium text-zinc-900 hover:underline">
-            Create one
-          </Link>
-        </p>
-
-      </div>
+        <div className="pt-4 border-t text-center">
+          <button
+            type="button"
+            onClick={() => setIsRegisterMode(!isRegisterMode)}
+            className="text-xs text-blue-600 hover:underline font-semibold"
+          >
+            {isRegisterMode ? "Already have an account? Sign In" : "Don't have an account? Sign Up"}
+          </button>
+        </div>
+      </Card>
     </div>
   );
 }

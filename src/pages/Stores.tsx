@@ -1,184 +1,200 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { Plus, Store as StoreIcon, ArrowRight, Edit, Trash2 } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
-import { motion } from "framer-motion";
+import { Plus, Store as StoreIcon, Trash2, Edit, Calculator, LogOut, User, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Modal } from "@/components/ui/modal";
 import { Input } from "@/components/ui/input";
-import { 
-  useListStores, 
-  useCreateStore, 
-  useUpdateStore, 
-  useDeleteStore,
-  getListStoresQueryKey,
-  type Store 
-} from "@workspace/api-client-react";
+import { useAuth } from "@/context/AuthContext";
+
+type Store = {
+  id: string;
+  name: string;
+  description: string;
+};
 
 export default function Stores() {
-  const queryClient = useQueryClient();
-  const { data: stores, isLoading } = useListStores();
-  
+  const { currentUser, logout, showConfirm } = useAuth();
+
+  const [stores, setStores] = useState<Store[]>(() => {
+    const saved = localStorage.getItem("stores");
+    return saved ? JSON.parse(saved) : [
+      { id: "13", name: "Ondam Restaurant", description: "Main branch recipes & costing" }
+    ];
+  });
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStore, setEditingStore] = useState<Store | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
-  const { mutate: createStore, isPending: isCreating } = useCreateStore({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-        closeModal();
-      }
-    }
-  });
-
-  const { mutate: updateStore, isPending: isUpdating } = useUpdateStore({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-        closeModal();
-      }
-    }
-  });
-
-  const { mutate: deleteStore } = useDeleteStore({
-    mutation: {
-      onSuccess: () => queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() })
-    }
-  });
-
   useEffect(() => {
-    if (editingStore) {
-      setName(editingStore.name);
-      setDescription(editingStore.description || "");
+    localStorage.setItem("stores", JSON.stringify(stores));
+  }, [stores]);
+
+  const handleOpenModal = (store?: Store) => {
+    if (store) {
+      setEditingStore(store);
+      setName(store.name);
+      setDescription(store.description);
     } else {
+      setEditingStore(null);
       setName("");
       setDescription("");
     }
-  }, [editingStore]);
-
-  const openNewStore = () => {
-    setEditingStore(null);
     setIsModalOpen(true);
   };
 
-  const openEditStore = (store: Store) => {
-    setEditingStore(store);
-    setIsModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setEditingStore(null);
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSaveStore = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
     if (editingStore) {
-      updateStore({ id: editingStore.id, data: { name, description } });
+      setStores(stores.map(s => s.id === editingStore.id ? { ...s, name, description } : s));
     } else {
-      createStore({ data: { name, description } });
+      const newStore: Store = {
+        id: Date.now().toString(),
+        name,
+        description
+      };
+      setStores([...stores, newStore]);
     }
+    setIsModalOpen(false);
   };
 
-  const handleDelete = (id: number) => {
-    if (window.confirm("Are you sure you want to delete this store? All menu items will be lost.")) {
-      deleteStore({ id });
-    }
+  // 모던 Confirm 모달 적용
+  const handleDeleteStore = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    showConfirm("Delete this store? All menu items inside will be removed.", () => {
+      setStores(stores.filter(s => s.id !== id));
+      localStorage.removeItem(`store_menu_${id}`);
+    });
   };
 
   return (
-    <div className="p-3 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="p-6 max-w-5xl mx-auto space-y-8">
+      {/* 상단 헤더 및 사용자 계정 메뉴 */}
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b pb-6">
         <div>
-          <h1 className="text-xl sm:text-2xl font-display font-bold text-zinc-900">Stores</h1>
-          <p className="text-xs sm:text-sm text-zinc-500 mt-0.5">Manage your restaurant locations and specific menus.</p>
+          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Restaurant Costing System</h1>
+          <p className="text-gray-500 text-sm mt-1">Manage master ingredients, stores, and recipe food costs.</p>
         </div>
-        <Button onClick={openNewStore} className="w-full sm:w-auto">
-          <Plus className="w-4 h-4 mr-2" /> Add Store
-        </Button>
-      </div>
 
-      {isLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-36 sm:h-48 rounded-2xl bg-zinc-100 animate-pulse" />
-          ))}
-        </div>
-      ) : stores?.length === 0 ? (
-        <div className="text-center py-12 sm:py-16 bg-white border border-zinc-200 border-dashed rounded-2xl">
-          <StoreIcon className="w-9 h-9 sm:w-12 sm:h-12 text-zinc-300 mx-auto mb-3" />
-          <h3 className="text-base font-semibold text-zinc-900">No stores found</h3>
-          <p className="text-zinc-500 mt-1 mb-4 text-sm">Create your first store to start managing menus.</p>
-          <Button onClick={openNewStore} variant="outline">Create Store</Button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-          {stores?.map((store, i) => (
-            <motion.div
-              key={store.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
-            >
-              <Card className="flex flex-col h-full hover:shadow-md hover:border-zinc-300 transition-all duration-300 group">
-                <div className="p-4 sm:p-5 flex-1">
-                  <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-zinc-100 flex items-center justify-center mb-3 sm:mb-4 group-hover:bg-zinc-900 group-hover:text-white transition-colors duration-300">
-                    <StoreIcon className="w-4 h-4 sm:w-5 sm:h-5" />
-                  </div>
-                  <h3 className="text-base sm:text-lg font-display font-bold text-zinc-900 leading-tight">{store.name}</h3>
-                  <p className="text-zinc-500 text-xs sm:text-sm mt-1.5 line-clamp-2">{store.description || 'No description provided.'}</p>
-                </div>
-                <div className="px-4 sm:px-5 py-3 border-t border-zinc-100 bg-zinc-50/50 flex items-center justify-between rounded-b-2xl">
-                  <Link href={`/stores/${store.id}/menu`} className="text-sm font-semibold text-zinc-900 hover:text-zinc-600 transition-colors flex items-center">
-                    Manage Menu <ArrowRight className="w-4 h-4 ml-1" />
-                  </Link>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button variant="ghost" size="icon" onClick={() => openEditStore(store)} className="h-8 w-8 text-zinc-500">
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(store.id)} className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50">
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-          ))}
-        </div>
-      )}
+        {/* 사용자 정보 및 로그아웃/프로필 버튼 */}
+        <div className="flex items-center gap-3 bg-white p-2 border rounded-xl shadow-sm">
+          <div className="flex items-center gap-2 px-2">
+            <div className="w-8 h-8 bg-slate-900 text-white rounded-full flex items-center justify-center font-bold text-sm">
+              {currentUser?.username[0].toUpperCase()}
+            </div>
+            <div>
+              <p className="text-xs font-bold text-slate-900">{currentUser?.username}</p>
+              <p className="text-[10px] text-slate-400 uppercase">{currentUser?.role}</p>
+            </div>
+          </div>
 
-      <Modal isOpen={isModalOpen} onClose={closeModal} title={editingStore ? "Edit Store" : "Create New Store"}>
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Store Name</label>
-            <Input 
-              value={name} 
-              onChange={e => setName(e.target.value)} 
-              placeholder="e.g. Downtown Branch" 
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1.5">Description (Optional)</label>
-            <Input 
-              value={description} 
-              onChange={e => setDescription(e.target.value)} 
-              placeholder="Brief details about this location" 
-            />
-          </div>
-          <div className="pt-4 flex justify-end gap-3 border-t border-zinc-100">
-            <Button type="button" variant="ghost" onClick={closeModal}>Cancel</Button>
-            <Button type="submit" disabled={isCreating || isUpdating}>
-              {editingStore ? "Save Changes" : "Create Store"}
+          <div className="flex items-center gap-1 border-l pl-3">
+            {currentUser?.role === "admin" && (
+              <Link href="/admin">
+                <Button variant="outline" size="sm" className="text-xs flex items-center gap-1">
+                  <ShieldCheck size={14} /> Admin
+                </Button>
+              </Link>
+            )}
+            <Link href="/profile">
+              <Button variant="outline" size="sm" className="text-xs flex items-center gap-1">
+                <User size={14} /> Settings
+              </Button>
+            </Link>
+            <Button variant="destructive" size="sm" onClick={logout} className="text-xs flex items-center gap-1">
+              <LogOut size={14} /> Sign Out
             </Button>
           </div>
-        </form>
-      </Modal>
+        </div>
+      </div>
+
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-xl font-bold">Stores</h2>
+          <p className="text-xs text-gray-500">Select a store to manage recipes and menu folders.</p>
+        </div>
+        <div className="flex gap-2">
+          <Link href="/ingredients">
+            <Button variant="outline" className="flex items-center gap-2">
+              📦 Master Ingredients
+            </Button>
+          </Link>
+          <Button onClick={() => handleOpenModal()} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white">
+            <Plus size={16} /> Add Store
+          </Button>
+        </div>
+      </div>
+
+      {/* 매장 카드 목록 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {stores.map((store) => (
+          <Card key={store.id} className="p-6 hover:shadow-md transition-all flex flex-col justify-between space-y-6 bg-white border rounded-xl">
+            <div className="space-y-2">
+              <div className="flex justify-between items-start">
+                <span className="p-2 bg-slate-100 rounded-lg text-slate-800">
+                  <StoreIcon size={22} />
+                </span>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="icon" onClick={() => handleOpenModal(store)}>
+                    <Edit size={16} />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={(e) => handleDeleteStore(store.id, e)}>
+                    <Trash2 size={16} className="text-red-500" />
+                  </Button>
+                </div>
+              </div>
+              <h3 className="text-xl font-bold text-slate-900">{store.name}</h3>
+              <p className="text-sm text-gray-500">{store.description || "No description provided."}</p>
+            </div>
+
+            <Link href={`/stores/${store.id}/menu`}>
+              <Button className="w-full flex justify-between items-center bg-slate-900 hover:bg-slate-800 text-white">
+                <span className="flex items-center gap-2">
+                  <Calculator size={16} /> Manage Recipes & Menu
+                </span>
+                <span>→</span>
+              </Button>
+            </Link>
+          </Card>
+        ))}
+      </div>
+
+      {/* 매장 추가/수정 모달 */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 max-w-md w-full space-y-4">
+            <h2 className="text-lg font-bold">{editingStore ? "Edit Store" : "Add New Store"}</h2>
+            <form onSubmit={handleSaveStore} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Store Name</label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Ondam Doncaster"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Description</label>
+                <Input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="e.g. Main branch location"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)}>Cancel</Button>
+                <Button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white">Save Store</Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
