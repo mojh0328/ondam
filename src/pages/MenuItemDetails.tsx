@@ -47,7 +47,6 @@ export default function MenuItemDetail() {
 
   const fetchRecipeDetail = async () => {
     try {
-      // 1. Supabase `recipes` 테이블에서 현재 레시피 정보 조회
       const { data: recipeData, error: recipeError } = await supabase
         .from("recipes")
         .select("*")
@@ -60,7 +59,6 @@ export default function MenuItemDetail() {
         setSellingPrice(Number(recipeData.selling_price || 0));
       }
 
-      // 2. Supabase `recipe_ingredients` 테이블에서 해당 레시피의 재료 목록 조회
       const { data: riData, error: riError } = await supabase
         .from("recipe_ingredients")
         .select("*")
@@ -69,7 +67,7 @@ export default function MenuItemDetail() {
       if (riError) throw riError;
       if (riData) {
         const mapped: RecipeItem[] = riData.map((item: any) => {
-          const q = Number(item.quantity_grams || 0);
+          const q = Number(item.quantity_grams || item.quantity || 0);
           const c = Number(item.cost_per_gram || 0);
           return {
             id: String(item.id),
@@ -85,7 +83,6 @@ export default function MenuItemDetail() {
         setRecipeIngredients(mapped);
       }
 
-      // 3. Supabase `ingredients` 테이블에서 현재 계정의 마스터 재료 목록 조회
       let query = supabase.from("ingredients").select("*");
       if (currentUser?.username) {
         query = query.eq("user_id", currentUser.username);
@@ -142,6 +139,7 @@ export default function MenuItemDetail() {
         recipe_id: recipeId,
         ingredient_id: selectedMaster.id,
         ingredient_name: selectedMaster.name,
+        quantity: qty,
         quantity_grams: qty,
         display_unit: selectedMaster.unit,
         cost_per_gram: selectedMaster.costPerGram,
@@ -179,7 +177,6 @@ export default function MenuItemDetail() {
 
     const lines = bulkText.split("\n");
     const newItemsToInsert: any[] = [];
-    const localNewItems: RecipeItem[] = [];
 
     lines.forEach((line) => {
       const parts = line.split(/[\t,]/);
@@ -194,6 +191,7 @@ export default function MenuItemDetail() {
           recipe_id: recipeId,
           ingredient_id: found ? found.id : String(Date.now()),
           ingredient_name: name,
+          quantity: qty,
           quantity_grams: qty,
           display_unit: found ? found.unit : "g",
           cost_per_gram: cpg,
@@ -213,7 +211,7 @@ export default function MenuItemDetail() {
             id: String(item.id),
             ingredientId: String(item.ingredient_id),
             name: item.ingredient_name,
-            quantityGrams: Number(item.quantity_grams),
+            quantityGrams: Number(item.quantity_grams || item.quantity),
             displayUnit: item.display_unit,
             costPerGram: Number(item.cost_per_gram),
             totalCost: Number(item.total_cost),

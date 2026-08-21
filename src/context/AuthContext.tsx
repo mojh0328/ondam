@@ -14,7 +14,7 @@ interface AuthContextType {
   currentUser: User | null;
   registeredUsers: User[];
   login: (username: string, password?: string) => boolean;
-  register: (username: string, password?: string, phone?: string) => boolean;
+  register: (username: string, password?: string, phone?: string) => Promise<boolean>;
   logout: () => void;
   signup: (username: string, storeName?: string) => Promise<boolean>;
   showConfirm: (message: string, onConfirm: () => void) => void;
@@ -37,7 +37,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const saved = localStorage.getItem("registered_users_list");
       if (saved) {
         const parsed = JSON.parse(saved);
-        // 기존에 비밀번호가 없던 admin 계정 등에 기본 비밀번호 부여
         return parsed.map((u: User) => ({
           ...u,
           password: u.password || "admin123"
@@ -67,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = (username: string, password?: string, phone?: string) => {
+  const register = async (username: string, password?: string, phone?: string): Promise<boolean> => {
     if (!username || !username.trim()) return false;
     const cleanUsername = username.trim();
     
@@ -91,11 +90,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setCurrentUser(newUser);
 
     try {
-      supabase
+      const { error } = await supabase
         .from("users")
-        .insert([{ username: cleanUsername, store_name: "Ondam" }])
-        .select()
-        .maybeSingle();
+        .insert([{ username: cleanUsername, store_name: "Ondam", phone: phone || "" }]);
+      
+      if (error) {
+        console.error("Supabase insert error:", error);
+      }
     } catch (err) {
       console.warn("Supabase register warning:", err);
     }
@@ -117,7 +118,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
 
-    // 비밀번호 필수 대조 (등록된 비밀번호와 입력한 비밀번호가 다르면 차단)
     if (foundUser.password && foundUser.password !== password) {
       alert("Incorrect password. Please try again.");
       return false;
