@@ -69,7 +69,6 @@ export default function Ingredients() {
           const yP = Number(item.yield_percent ?? item.yieldPercent ?? 100);
           const u = item.unit || "g";
           
-          // 원가 계산 로직
           let rawGrams = amt;
           if (u === "kg" || u === "L") rawGrams = amt * 1000;
           const validGrams = rawGrams * (yP / 100);
@@ -115,15 +114,6 @@ export default function Ingredients() {
     }
   }, [editingIngredient, isModalOpen]);
 
-  const calculateCostPerGram = (amt: number, u: string, price: number, yPercent: number) => {
-    if (!amt || amt <= 0 || !price || price <= 0) return 0;
-    let rawGrams = amt;
-    if (u === "kg" || u === "L") rawGrams = amt * 1000;
-    
-    const validGrams = rawGrams * ((yPercent || 100) / 100);
-    return validGrams > 0 ? price / validGrams : price / rawGrams;
-  };
-
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingIngredient(null);
@@ -153,7 +143,7 @@ export default function Ingredients() {
     }
   };
 
-  // Supabase에 식자재 추가 또는 수정
+  // Supabase에 식자재 추가 또는 수정 (안전한 필드만 전송)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
@@ -162,32 +152,26 @@ export default function Ingredients() {
     const prc = Number(totalPrice);
     const yP = yieldPercent === "" ? 100 : Number(yieldPercent);
 
+    const payload = {
+      name,
+      purchase_amount: amt,
+      unit,
+      total_price: prc,
+      yield_percent: yP
+    };
+
     try {
       if (editingIngredient) {
         const { error } = await supabase
           .from('ingredients')
-          .update({
-            name,
-            purchase_amount: amt,
-            unit,
-            total_price: prc,
-            yield_percent: yP,
-            supplier_id: selectedSupplierId
-          })
+          .update(payload)
           .eq('id', editingIngredient.id);
 
         if (error) throw error;
       } else {
         const { error } = await supabase
           .from('ingredients')
-          .insert({
-            name,
-            purchase_amount: amt,
-            unit,
-            total_price: prc,
-            yield_percent: yP,
-            supplier_id: selectedSupplierId
-          });
+          .insert(payload);
 
         if (error) throw error;
       }
@@ -206,7 +190,6 @@ export default function Ingredients() {
 
     const lines = bulkText.split("\n");
     const newItems: any[] = [];
-    const targetSup = activeSupplierId === "all" ? (suppliers[1]?.id || "sup_1") : activeSupplierId;
 
     lines.forEach((line) => {
       const parts = line.trim().split(/,|\t|\s+/).map(p => p.trim()).filter(Boolean);
@@ -223,8 +206,7 @@ export default function Ingredients() {
           purchase_amount: amt,
           unit: u,
           total_price: priceNum,
-          yield_percent: yP,
-          supplier_id: targetSup
+          yield_percent: yP
         });
       }
     });
@@ -252,7 +234,7 @@ export default function Ingredients() {
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const json = JSON.parse(event.target?.result as string);
+        JSON.parse(event.target?.result as string);
         alert("Import completed (JSON structure loaded).");
       } catch (err) {
         alert("Failed to parse the backup file.");
