@@ -42,6 +42,7 @@ export default function StoreMenu() {
 
   const currentUsername = currentUser?.username || 'default';
   const folderKey = `store_folders_${storeId}_${currentUsername}`;
+  const masterStorageKey = `master_ingredients_${currentUsername}`;
 
   const fetchRecipes = async () => {
     try {
@@ -55,7 +56,6 @@ export default function StoreMenu() {
         setFolders([]);
       }
 
-      // 🌟 Supabase `recipes` 테이블에서 현재 유저의 레시피 목록 조회
       let query = supabase.from('recipes').select('*');
       if (currentUser?.username) {
         query = query.eq('user_id', currentUser.username);
@@ -141,6 +141,91 @@ export default function StoreMenu() {
     }
   };
 
+  const handleExportRecipes = () => {
+    try {
+      const masterLocal = localStorage.getItem(masterStorageKey);
+      const masterItems = masterLocal ? JSON.parse(masterLocal) : [];
+
+      const exportData: any = { 
+        storeId,
+        folders,
+        menuItems,
+        master_ingredients: masterItems
+      };
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+      const downloadAnchor = document.createElement("a");
+      const today = new Date().toISOString().slice(0, 10);
+      
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `recipes-backup-${currentUsername}-${today}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      alert("Recipes and Master Ingredients exported successfully!");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleImportRecipes = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+        
+        let importedFolders = folders;
+        if (Array.isArray(json.folders) && json.folders.length > 0) {
+          importedFolders = json.folders;
+          setFolders(importedFolders);
+          localStorage.setItem(folderKey, JSON.stringify(importedFolders));
+        }
+
+        // 🌟 백업 파일에 마스터 재료가 포함되어 있다면 Supabase에 함께 연동
+        const rawMaster = json.master_ingredients || json.ingredients || [];
+        if (Array.isArray(rawMaster) && rawMaster.length > 0 && currentUser?.username) {
+          const rowsToInsert = rawMaster.map((item: any) => ({
+            user_id: currentUser.username,
+            name: item.name,
+            purchase_amount: Number(item.purchaseAmount || item.purchase_amount || 1000),
+            unit: item.unit || "g",
+            total_price: Number(item.totalPrice || item.total_price || 0),
+            yield_percent: Number(item.yieldPercent || item.yield_percent || 100),
+            supplier_id: item.supplierId || item.supplier_id || ""
+          }));
+          await supabase.from('ingredients').insert(rowsToInsert);
+        }
+
+        const itemsToImport = json.menuItems || [];
+        if (Array.isArray(itemsToImport) && itemsToImport.length > 0) {
+          const defaultFolderId = importedFolders[0]?.id || "default";
+
+          for (const item of itemsToImport) {
+            await supabase.from('recipes').insert([{
+              user_id: currentUser?.username || 'default',
+              store_id: storeId,
+              folder_id: item.folderId || defaultFolderId,
+              title: item.name || item.title || "Untitled",
+              selling_price: Number(item.price || 0)
+            }]);
+          }
+
+          await fetchRecipes();
+          alert(`Successfully imported ${itemsToImport.length} menu items and cloud data!`);
+        } else {
+          alert("No menu items found in this backup file.");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Failed to import backup file.");
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const handleCreateOrUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || price === "" || !selectedFolderId) {
@@ -214,11 +299,14 @@ export default function StoreMenu() {
           <Link href="/"><Button variant="outline" size="icon"><ArrowLeft size={16} /></Button></Link>
           <div>
             <h1 className="text-2xl font-bold">Recipe & Menu Folders ({currentUsername})</h1>
-            <p className="text-gray-500 text-sm">Organize recipes with Supabase cloud sync.</p>
+            <p className="text-gray-500 text-sm">Organize recipes with Supabase cloud sync & backup.</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <input type="file" accept=".json" ref={fileInputRef} onChange={handleImportRecipes} className="hidden" />
+          <Button variant="outline" onClick={handleExportRecipes} className="bg-green-50 text-green-700 border-green-200"><Download size={16} /> Export</Button>
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="bg-blue-50 text-blue-700 border-blue-200"><Upload size={16} /> Import</Button>
           <Button onClick={() => { setEditingItem(null); setSelectedFolderId(folders[0]?.id || ""); setIsModalOpen(true); }} className="bg-slate-900 text-white"><Plus size={16} /> Add Recipe</Button>
         </div>
       </div>

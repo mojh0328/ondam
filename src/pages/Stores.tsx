@@ -22,12 +22,19 @@ export default function Stores() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
-  // Supabase에서 지점 목록 불러오기
+  const currentUsername = currentUser?.username || 'default';
+
+  // 🌟 Supabase에서 현재 로그인한 유저의 지점 목록만 불러오기
   const fetchStores = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stores')
-        .select('*');
+      let query = supabase.from('stores').select('*');
+      if (currentUser?.username) {
+        query = query.eq('user_id', currentUser.username);
+      } else {
+        query = query.eq('user_id', 'default');
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       if (data) {
@@ -44,7 +51,7 @@ export default function Stores() {
 
   useEffect(() => {
     fetchStores();
-  }, []);
+  }, [currentUser?.username]);
 
   const handleOpenModal = (store?: Store) => {
     if (store) {
@@ -59,7 +66,7 @@ export default function Stores() {
     setIsModalOpen(true);
   };
 
-  // Supabase에 지점 추가 또는 수정 (디버깅 팝업 포함)
+  // 🌟 Supabase에 지점 추가 또는 수정 시 user_id 함께 저장하기
   const handleSaveStore = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -75,7 +82,11 @@ export default function Stores() {
       } else {
         const { error } = await supabase
           .from('stores')
-          .insert({ name, description });
+          .insert({ 
+            user_id: currentUsername,
+            name, 
+            description 
+          });
 
         if (error) throw error;
       }
