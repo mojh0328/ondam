@@ -27,7 +27,6 @@ export default function Ingredients() {
   const { currentUser } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 기본 공급업체(폴더) 설정
   const [suppliers, setSuppliers] = useState<Supplier[]>([
     { id: "all", name: "All Vendors" },
     { id: "sup_1", name: "General Supplier" }
@@ -53,12 +52,14 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  // Supabase에서 식자재 데이터 불러오기
+  // 현재 로그인한 사용자의 데이터만 Supabase에서 불러오기
   const fetchIngredients = async () => {
+    if (!currentUser?.username) return;
     try {
       const { data, error } = await supabase
         .from('ingredients')
-        .select('*');
+        .select('*')
+        .eq('user_id', currentUser.username);
 
       if (error) throw error;
 
@@ -93,8 +94,10 @@ export default function Ingredients() {
   };
 
   useEffect(() => {
-    fetchIngredients();
-  }, []);
+    if (currentUser?.username) {
+      fetchIngredients();
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (editingIngredient) {
@@ -143,10 +146,10 @@ export default function Ingredients() {
     }
   };
 
-  // Supabase에 식자재 추가 또는 수정 (안전한 필드만 전송)
+  // 저장할 때 현재 로그인한 사용자의 user_id를 함께 저장
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
+    if (!name.trim() || purchaseAmount === "" || totalPrice === "" || !currentUser?.username) return;
 
     const amt = Number(purchaseAmount);
     const prc = Number(totalPrice);
@@ -157,7 +160,8 @@ export default function Ingredients() {
       purchase_amount: amt,
       unit,
       total_price: prc,
-      yield_percent: yP
+      yield_percent: yP,
+      user_id: currentUser.username
     };
 
     try {
@@ -186,7 +190,7 @@ export default function Ingredients() {
 
   const handleBulkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!bulkText.trim()) return;
+    if (!bulkText.trim() || !currentUser?.username) return;
 
     const lines = bulkText.split("\n");
     const newItems: any[] = [];
@@ -206,7 +210,8 @@ export default function Ingredients() {
           purchase_amount: amt,
           unit: u,
           total_price: priceNum,
-          yield_percent: yP
+          yield_percent: yP,
+          user_id: currentUser.username
         });
       }
     });
@@ -265,7 +270,6 @@ export default function Ingredients() {
     }
   };
 
-  // Supabase에서 식자재 삭제
   const handleDelete = async (id: string) => {
     if (confirm("Delete this ingredient?")) {
       try {
@@ -317,7 +321,6 @@ export default function Ingredients() {
         </div>
       </div>
 
-      {/* 공급업체 폴더 탭 영역 */}
       <div className="space-y-2 border-b pb-4">
         <div className="flex justify-between items-center">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Vendor Folders</p>
@@ -352,13 +355,11 @@ export default function Ingredients() {
         </div>
       </div>
 
-      {/* 검색 */}
       <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-gray-200">
         <Search size={18} className="text-gray-400 ml-2" />
         <input type="text" placeholder="Search ingredient..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full p-2 outline-none text-sm" />
       </div>
 
-      {/* 카드 리스트 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredIngredients.map((item) => {
           const supName = suppliers.find(s => s.id === item.supplierId)?.name || "General";
@@ -400,7 +401,6 @@ export default function Ingredients() {
         })}
       </div>
 
-      {/* 공급업체 모달 */}
       {isSupplierModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl p-6 max-w-sm w-full space-y-4">
@@ -419,7 +419,6 @@ export default function Ingredients() {
         </div>
       )}
 
-      {/* 단일 추가 모달 */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl p-6 max-w-md w-full space-y-4">
@@ -473,7 +472,6 @@ export default function Ingredients() {
         </div>
       )}
 
-      {/* 벌크 모달 */}
       {isBulkModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl p-6 max-w-lg w-full space-y-4">
