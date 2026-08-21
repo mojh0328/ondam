@@ -52,7 +52,6 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  // Supabase 클라우드에서 전체 재료 데이터 실시간 조회
   const fetchIngredients = async () => {
     try {
       const { data, error } = await supabase
@@ -228,7 +227,7 @@ export default function Ingredients() {
     }
   };
 
-  // master_ingredients 구조를 완벽하게 파싱하여 Supabase에 저장하도록 개선된 Import 함수
+  // master_ingredients 키를 정확히 타겟팅하여 Supabase에 저장하는 Import 함수
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -238,17 +237,8 @@ export default function Ingredients() {
       try {
         const json = JSON.parse(event.target?.result as string);
         
-        // 올려주신 JSON 파일 구조처럼 master_ingredients 키가 있거나, ingredients 키가 있거나, 배열 자체인 경우 모두 대응
-        let rawItems = [];
-        if (Array.isArray(json)) {
-          rawItems = json;
-        } else if (json && Array.isArray(json.master_ingredients)) {
-          rawItems = json.master_ingredients;
-        } else if (json && Array.isArray(json.ingredients)) {
-          rawItems = json.ingredients;
-        } else {
-          rawItems = Object.values(json).find(val => Array.isArray(val)) || [];
-        }
+        // 올려주신 백업 파일의 "master_ingredients" 배열을 정확히 추출
+        const rawItems = json.master_ingredients || json.ingredients || (Array.isArray(json) ? json : []);
 
         if (Array.isArray(rawItems) && rawItems.length > 0) {
           const insertPayloads = rawItems.map((item: any) => ({
@@ -269,7 +259,7 @@ export default function Ingredients() {
           await fetchIngredients();
           alert(`Successfully imported ${insertPayloads.length} ingredients to Supabase!`);
         } else {
-          alert("No master_ingredients array found in the JSON file.");
+          alert("No master_ingredients found in the JSON file.");
         }
       } catch (err) {
         alert("Failed to parse or save the backup file to database.");
