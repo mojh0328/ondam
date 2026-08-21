@@ -52,9 +52,10 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  // 현재 로그인한 사용자의 데이터만 Supabase에서 불러오기
+  // Supabase에서 현재 로그인한 유저의 데이터만 안전하게 불러오기
   const fetchIngredients = async () => {
     if (!currentUser?.username) return;
+    
     try {
       const { data, error } = await supabase
         .from('ingredients')
@@ -146,10 +147,14 @@ export default function Ingredients() {
     }
   };
 
-  // 저장할 때 현재 로그인한 사용자의 user_id를 함께 저장
+  // 저장할 때 현재 로그인한 유저의 username이 없으면 경고 후 차단
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || purchaseAmount === "" || totalPrice === "" || !currentUser?.username) return;
+    if (!currentUser?.username) {
+      alert("User session not found. Please log in again.");
+      return;
+    }
+    if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
 
     const amt = Number(purchaseAmount);
     const prc = Number(totalPrice);
@@ -190,7 +195,11 @@ export default function Ingredients() {
 
   const handleBulkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!bulkText.trim() || !currentUser?.username) return;
+    if (!currentUser?.username) {
+      alert("User session not found. Please log in again.");
+      return;
+    }
+    if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
     const newItems: any[] = [];

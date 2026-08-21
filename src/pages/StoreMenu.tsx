@@ -25,8 +25,6 @@ export default function StoreMenu() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { currentUser } = useAuth();
 
-  const userPrefix = currentUser ? `_user_${currentUser.username}` : "";
-
   const [folders, setFolders] = useState<MenuFolder[]>([
     { id: "fld_1", name: "Stove" },
     { id: "fld_2", name: "Wok" },
@@ -36,7 +34,6 @@ export default function StoreMenu() {
   const [activeFolderId, setActiveFolderId] = useState<string>("fld_1");
   const [searchTerm, setSearchTerm] = useState("");
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [recipeCosts, setRecipeCosts] = useState<{ [key: string]: number }>({});
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
@@ -116,24 +113,40 @@ export default function StoreMenu() {
     }
   };
 
+  // JSON 파일 Import 시 Supabase에 일괄 저장되도록 수정
   const handleImportRecipes = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
         if (Array.isArray(json.folders) && json.folders.length > 0) {
           setFolders(json.folders);
           setActiveFolderId(json.folders[0].id);
         }
-        if (Array.isArray(json.menuItems)) {
-          setMenuItems(json.menuItems);
+
+        if (Array.isArray(json.menuItems) && json.menuItems.length > 0) {
+          // Supabase에 저장할 데이터 형식으로 변환
+          const insertPayloads = json.menuItems.map((item: any) => ({
+            store_id: storeId,
+            title: item.name,
+            selling_price: Number(item.price || 0),
+            folder_id: item.folderId || "fld_1"
+          }));
+
+          const { error } = await supabase
+            .from('recipes')
+            .insert(insertPayloads);
+
+          if (error) throw error;
+
+          await fetchRecipes();
+          alert("Imported and saved to database successfully!");
         }
-        alert("Imported successfully!");
       } catch (err) {
-        alert("Failed to parse the backup file.");
+        alert("Failed to parse or save the backup file to database.");
         console.error(err);
       }
     };
@@ -210,7 +223,6 @@ export default function StoreMenu() {
     }
   };
 
-  // Supabase에서 메뉴 삭제 및 화면 상태 즉시 반영
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Are you sure you want to delete this menu item?")) {
@@ -222,7 +234,6 @@ export default function StoreMenu() {
 
         if (error) throw error;
 
-        // 화면 목록에서 즉시 제거
         setMenuItems(prev => prev.filter(item => item.id !== id));
       } catch (err) {
         console.error("Failed to delete recipe from Supabase:", err);
