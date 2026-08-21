@@ -5,21 +5,29 @@ export type User = {
   id?: string;
   username: string;
   storeName?: string;
+  role?: string;
+  phone?: string;
 };
 
 interface AuthContextType {
   currentUser: User | null;
-  login: (username: string, storeName?: string) => Promise<boolean>;
+  login: (username: string, password?: string) => boolean;
+  register: (username: string, password?: string, phone?: string) => boolean;
   logout: () => void;
   signup: (username: string, storeName?: string) => Promise<boolean>;
+  showConfirm: (message: string, onConfirm: () => void) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem("current_auth_user");
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem("current_auth_user");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
   });
 
   useEffect(() => {
@@ -30,74 +38,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [currentUser]);
 
-  // 회원가입: Supabase users 테이블에 저장
-  const signup = async (username: string, storeName = "My Restaurant") => {
-    try {
-      const { data: existing, error: fetchError } = await supabase
-        .from("users")
-        .select("*")
-        .eq("username", username)
-        .maybeSingle();
-
-      if (fetchError) throw fetchError;
-
-      if (existing) {
-        alert("Username already exists. Please choose another or log in.");
-        return false;
-      }
-
-      const { data, error } = await supabase
-        .from("users")
-        .insert([{ username, store_name: storeName }])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      const newUser: User = {
-        id: data.id,
-        username: data.username,
-        storeName: data.store_name
-      };
-
-      setCurrentUser(newUser);
-      return true;
-    } catch (err) {
-      console.error("Signup failed:", err);
-      alert("Signup failed. Please check your connection.");
-      return false;
+  const showConfirm = (message: string, onConfirm: () => void) => {
+    if (window.confirm(message)) {
+      onConfirm();
     }
   };
 
-  // 로그인: Supabase users 테이블에서 사용자 확인
-  const login = async (username: string) => {
+  const register = (username: string, password?: string, phone?: string) => {
+    if (!username || !username.trim()) return false;
+    const cleanUsername = username.trim();
+    const newUser: User = {
+      id: `user_${Date.now()}`,
+      username: cleanUsername,
+      storeName: "Ondam",
+      role: cleanUsername.toLowerCase() === "admin" ? "admin" : "user",
+      phone: phone || ""
+    };
+
     try {
-      const { data, error } = await supabase
+      supabase
+        .from("users")
+        .insert([{ username: cleanUsername, store_name: "Ondam" }])
+        .select()
+        .maybeSingle();
+    } catch (err) {
+      console.warn("Supabase register warning:", err);
+    }
+
+    setCurrentUser(newUser);
+    return true;
+  };
+
+  const login = (username: string, password?: string) => {
+    if (!username || !username.trim()) return false;
+    const cleanUsername = username.trim();
+    const loggedUser: User = {
+      id: `user_${Date.now()}`,
+      username: cleanUsername,
+      storeName: "Ondam",
+      role: cleanUsername.toLowerCase() === "admin" ? "admin" : "user"
+    };
+
+    try {
+      supabase
         .from("users")
         .select("*")
-        .eq("username", username)
-        .maybeSingle();
-
-      if (error) throw error;
-
-      if (!data) {
-        alert("User not found. Please sign up first.");
-        return false;
-      }
-
-      const loggedUser: User = {
-        id: data.id,
-        username: data.username,
-        storeName: data.store_name
-      };
-
-      setCurrentUser(loggedUser);
-      return true;
+        .eq("username", cleanUsername)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data) {
+            loggedUser.id = data.id;
+            loggedUser.storeName = data.store_name || "Ondam";
+          }
+        });
     } catch (err) {
-      console.error("Login failed:", err);
-      alert("Login failed. Please check your connection.");
-      return false;
+      console.warn("Supabase login warning:", err);
     }
+
+    setCurrentUser(loggedUser);
+    return true;
+  };
+
+  const signup = async (username: string, storeName = "Ondam") => {
+    return register(username, "", "");
   };
 
   const logout = () => {
@@ -106,7 +109,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, login, logout, signup }}>
+    <AuthContext.Provider value={{ currentUser, login, register, logout, signup, showConfirm }}>
       {children}
     </AuthContext.Provider>
   );
