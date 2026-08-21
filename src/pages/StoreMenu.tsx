@@ -44,6 +44,39 @@ export default function StoreMenu() {
   const currentUsername = currentUser?.username || 'default';
   const masterStorageKey = `master_ingredients_${currentUsername}`;
 
+  // 🌟 [성능 최적화] 모든 레시피의 원가를 단 1회의 쿼리로 일괄 계산하도록 개선
+  const calculateAllCosts = async (items: MenuItem[]) => {
+    try {
+      if (!items || items.length === 0) {
+        setRecipeCosts({});
+        return;
+      }
+
+      const recipeIds = items.map(item => item.id);
+
+      // 한번에 해당 레시피들의 모든 하위 재료를 불러옴 (N+1 쿼리 문제 해결)
+      const { data: recipeIngs, error } = await supabase
+        .from('recipe_ingredients')
+        .select('recipe_id, total_cost')
+        .in('recipe_id', recipeIds);
+
+      if (error) throw error;
+
+      const costsMap: { [key: string]: { totalCost: number; foodCostPercent: number } } = {};
+      
+      items.forEach((item) => {
+        const matchingIngs = recipeIngs?.filter((ri: any) => String(ri.recipe_id) === String(item.id)) || [];
+        const totalCost = matchingIngs.reduce((sum: number, ing: any) => sum + Number(ing.total_cost || 0), 0);
+        const foodCostPercent = item.price > 0 ? (totalCost / item.price) * 100 : 0;
+        costsMap[item.id] = { totalCost, foodCostPercent };
+      });
+
+      setRecipeCosts(costsMap);
+    } catch (err) {
+      console.error("Failed to calculate recipe costs:", err);
+    }
+  };
+
   const fetchFoldersAndRecipes = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -84,6 +117,7 @@ export default function StoreMenu() {
         await calculateAllCosts(mappedItems);
       } else {
         setMenuItems([]);
+        setRecipeCosts({});
       }
     } catch (err) {
       console.error("Failed to fetch folders or recipes from Supabase:", err);
@@ -91,26 +125,6 @@ export default function StoreMenu() {
       setIsLoading(false);
     }
   }, [storeId, currentUser]);
-
-  const calculateAllCosts = async (items: MenuItem[]) => {
-    try {
-      const { data: recipeIngs, error } = await supabase.from('recipe_ingredients').select('*');
-      if (error) throw error;
-
-      const costsMap: { [key: string]: { totalCost: number; foodCostPercent: number } } = {};
-      
-      items.forEach((item) => {
-        const matchingIngs = recipeIngs?.filter((ri: any) => String(ri.recipe_id) === String(item.id)) || [];
-        const totalCost = matchingIngs.reduce((sum: number, ing: any) => sum + Number(ing.total_cost || 0), 0);
-        const foodCostPercent = item.price > 0 ? (totalCost / item.price) * 100 : 0;
-        costsMap[item.id] = { totalCost, foodCostPercent };
-      });
-
-      setRecipeCosts(costsMap);
-    } catch (err) {
-      console.error("Failed to calculate recipe costs:", err);
-    }
-  };
 
   useEffect(() => {
     fetchFoldersAndRecipes();

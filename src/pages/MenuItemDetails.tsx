@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Link, useRoute } from "wouter";
 import { ArrowLeft, Plus, Trash2, Calculator, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,11 +42,11 @@ export default function MenuItemDetail() {
   const [selectedMaster, setSelectedMaster] = useState<MasterIngredient | null>(null);
   const [quantity, setQuantity] = useState<number | "">("");
   const [sectionName, setSectionName] = useState("Stove");
-
-  // 🌟 하드코딩 대신 상태로 관리하여 DB에서 가져온 store_id를 동적으로 반영
   const [storeId, setStoreId] = useState("13");
 
-  const fetchRecipeDetail = async () => {
+  // 🌟 성능 최적화를 위한 useCallback 적용
+  const fetchRecipeDetail = useCallback(async () => {
+    if (!recipeId) return;
     try {
       const { data: recipeData, error: recipeError } = await supabase
         .from("recipes")
@@ -59,7 +59,7 @@ export default function MenuItemDetail() {
         setMenuName(recipeData.title || "Recipe Menu");
         setSellingPrice(Number(recipeData.selling_price || 0));
         if (recipeData.store_id) {
-          setStoreId(String(recipeData.store_id)); // 🌟 DB에 저장된 실제 스토어 ID 연동
+          setStoreId(String(recipeData.store_id));
         }
       }
 
@@ -123,13 +123,11 @@ export default function MenuItemDetail() {
     } catch (err) {
       console.error("Failed to load recipe detail from Supabase:", err);
     }
-  };
+  }, [recipeId, currentUser]);
 
   useEffect(() => {
-    if (recipeId) {
-      fetchRecipeDetail();
-    }
-  }, [recipeId, currentUser]);
+    fetchRecipeDetail();
+  }, [fetchRecipeDetail]);
 
   const handleAddIngredient = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -164,7 +162,7 @@ export default function MenuItemDetail() {
         sectionName
       };
 
-      setRecipeIngredients([...recipeIngredients, newItem]);
+      setRecipeIngredients(prev => [...prev, newItem]);
       setSelectedMaster(null);
       setQuantity("");
       setSearchTerm("");
@@ -175,6 +173,7 @@ export default function MenuItemDetail() {
     }
   };
 
+  // 🌟 콤마, 탭, 띄어쓰기(단위 포함) 모두 완벽 호환되도록 개선된 벌크 추가 로직
   const handleBulkAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bulkText.trim()) return;
@@ -183,10 +182,32 @@ export default function MenuItemDetail() {
     const newItemsToInsert: any[] = [];
 
     lines.forEach((line) => {
-      const parts = line.split(/[\t,]/);
-      if (parts.length >= 2) {
-        const name = parts[0].trim();
-        const qty = Number(parts[1].trim()) || 0;
+      if (!line.trim()) return;
+
+      let name = "";
+      let qty = 0;
+
+      // 1. 콤마(,)나 탭(\t)으로 구분된 경우 (예: garlic, 100)
+      if (line.includes(",") || line.includes("\t")) {
+        const parts = line.split(/[\t,]/);
+        name = parts[0].trim();
+        const numMatch = parts[1] ? parts[1].replace(/[^0-9.]/g, "") : "0";
+        qty = Number(numMatch) || 0;
+      } else {
+        // 2. 띄어쓰기로 구분된 경우 (예: garlic 100g 또는 onion 20)
+        const spaceSplit = line.trim().split(/\s+/);
+        if (spaceSplit.length >= 2) {
+          const lastPart = spaceSplit.pop() || "";
+          name = spaceSplit.join(" ").trim();
+          const numMatch = lastPart.replace(/[^0-9.]/g, "");
+          qty = Number(numMatch) || 0;
+        } else {
+          name = line.trim();
+          qty = 0;
+        }
+      }
+
+      if (name && qty > 0) {
         const found = masterIngredients.find(m => m.name.toLowerCase() === name.toLowerCase());
         const cpg = found ? found.costPerGram : 0;
         const total = qty * cpg;
@@ -211,7 +232,7 @@ export default function MenuItemDetail() {
         if (error) throw error;
 
         if (data) {
-          const mapped = data.map((item: any) => ({
+          const mapped: RecipeItem[] = data.map((item: any) => ({
             id: String(item.id),
             ingredientId: String(item.ingredient_id),
             name: item.ingredient_name,
@@ -221,7 +242,7 @@ export default function MenuItemDetail() {
             totalCost: Number(item.total_cost),
             sectionName: item.section_name
           }));
-          setRecipeIngredients([...recipeIngredients, ...mapped]);
+          setRecipeIngredients(prev => [...prev, ...mapped]);
         }
 
         setBulkText("");
@@ -230,6 +251,8 @@ export default function MenuItemDetail() {
         console.error("Bulk add failed:", err);
         alert(`Bulk add failed: ${err.message || err}`);
       }
+    } else {
+      alert("Please check the input format. (e.g., garlic 100g or garlic, 100)");
     }
   };
 
@@ -239,7 +262,7 @@ export default function MenuItemDetail() {
         const { error } = await supabase.from("recipe_ingredients").delete().eq("id", id);
         if (error) throw error;
 
-        setRecipeIngredients(recipeIngredients.filter(i => i.id !== id));
+        setRecipeIngredients(prev => prev.filter(i => i.id !== id));
       } catch (err: any) {
         console.error("Failed to delete ingredient:", err);
         alert(`Delete failed: ${err.message || err}`);
@@ -247,11 +270,17 @@ export default function MenuItemDetail() {
     }
   };
 
-  const filteredMasters = masterIngredients.filter(m => 
-    m.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // 🌟 렌더링 최적화를 위한 useMemo 적용
+  const filteredMasters = useMemo(() => {
+    return masterIngredients.filter(m => 
+      m.name.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [masterIngredients, searchTerm]);
 
-  const totalFoodCost = recipeIngredients.reduce((acc, cur) => acc + (cur.totalCost || 0), 0);
+  const totalFoodCost = useMemo(() => {
+    return recipeIngredients.reduce((acc, cur) => acc + (cur.totalCost || 0), 0);
+  }, [recipeIngredients]);
+
   const margin = sellingPrice - totalFoodCost;
   const foodCostPercent = sellingPrice > 0 ? (totalFoodCost / sellingPrice) * 100 : 0;
 
@@ -400,13 +429,13 @@ export default function MenuItemDetail() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-3xl p-6 max-w-lg w-full space-y-4">
             <h2 className="text-lg font-bold">Bulk Input Ingredients</h2>
-            <p className="text-xs text-gray-500">Enter format: Ingredient Name, Quantity (one per line)</p>
+            <p className="text-xs text-gray-500">Enter format: Ingredient Name, Quantity (one per line, e.g., garlic 100g)</p>
             <form onSubmit={handleBulkAdd} className="space-y-4">
               <textarea 
                 rows={6}
                 value={bulkText}
                 onChange={(e) => setBulkText(e.target.value)}
-                placeholder={"Garlic, 100\nBeef, 250\nOnion, 50"}
+                placeholder={"garlic 100g\nOnion 20g"}
                 className="w-full border rounded-2xl p-3 text-sm outline-none bg-slate-50"
               />
               <div className="flex justify-end gap-2 pt-2">

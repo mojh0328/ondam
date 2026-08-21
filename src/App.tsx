@@ -27,8 +27,13 @@ function Router() {
       <Route path="/" component={Stores} />
       <Route path="/profile" component={Profile} />
       <Route path="/ingredients" component={Ingredients} />
-      <Route path="/stores/:id/menu" component={StoreMenu} />
-      <Route path="/menu-items/:id" component={MenuItemDetails} />
+      {/* 🌟 뒤로가기 시 컴포넌트가 강제로 새로고침되도록 key와 inline render 함수 적용 */}
+      <Route path="/stores/:id/menu">
+        {(params) => <StoreMenu key={params.id} />}
+      </Route>
+      <Route path="/menu-items/:id">
+        {(params) => <MenuItemDetails key={params.id} />}
+      </Route>
       <Route path="/admin" component={Admin} />
       <Route path="/login">
         <Redirect to="/" />
