@@ -52,7 +52,7 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  // Supabase에서 재료 데이터 불러오기 (user_id 컬럼 없이 전체 또는 공용 조회)
+  // Supabase에서 재료 데이터 불러오기
   const fetchIngredients = async () => {
     try {
       const { data, error } = await supabase
@@ -156,7 +156,8 @@ export default function Ingredients() {
       unit,
       total_price: prc,
       yield_percent: yP,
-      supplier_id: selectedSupplierId
+      supplier_id: selectedSupplierId,
+      user_id: currentUser?.username || "admin"
     };
 
     try {
@@ -207,7 +208,8 @@ export default function Ingredients() {
           unit: u,
           total_price: priceNum,
           yield_percent: yP,
-          supplier_id: targetSup
+          supplier_id: targetSup,
+          user_id: currentUser?.username || "admin"
         });
       }
     });
@@ -228,7 +230,7 @@ export default function Ingredients() {
     }
   };
 
-  // JSON 파일 Import 시 Supabase 데이터베이스에 즉시 저장되도록 수정
+  // JSON 파일 Import 시 Supabase 데이터베이스에 실제로 저장되도록 수정
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -237,14 +239,17 @@ export default function Ingredients() {
     reader.onload = async (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
-        if (Array.isArray(json.ingredients) && json.ingredients.length > 0) {
-          const insertPayloads = json.ingredients.map((item: any) => ({
+        const itemsToImport = json.ingredients || json;
+
+        if (Array.isArray(itemsToImport) && itemsToImport.length > 0) {
+          const insertPayloads = itemsToImport.map((item: any) => ({
             name: item.name,
             purchase_amount: item.purchaseAmount || item.purchase_amount || 1000,
             unit: item.unit || "g",
             total_price: item.totalPrice || item.total_price || 0,
             yield_percent: item.yieldPercent || item.yield_percent || 100,
-            supplier_id: item.supplierId || item.supplier_id || "sup_1"
+            supplier_id: item.supplierId || item.supplier_id || "sup_1",
+            user_id: currentUser?.username || "admin"
           }));
 
           const { error } = await supabase
@@ -255,9 +260,11 @@ export default function Ingredients() {
 
           await fetchIngredients();
           alert("Imported and saved to database successfully!");
+        } else {
+          alert("No ingredients found in the JSON file.");
         }
       } catch (err) {
-        alert("Failed to parse or save the backup file.");
+        alert("Failed to parse or save the backup file to database.");
         console.error(err);
       }
     };
