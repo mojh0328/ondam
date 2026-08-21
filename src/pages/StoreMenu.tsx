@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 type MenuItem = { 
   id: string; 
@@ -25,43 +26,54 @@ export default function StoreMenu() {
   const { currentUser } = useAuth();
 
   const userPrefix = currentUser ? `_user_${currentUser.username}` : "";
-  const foldersKey = `store_folders_${storeId}${userPrefix}`;
-  const menuKey = `store_menu_${storeId}${userPrefix}`;
 
-  const [folders, setFolders] = useState<MenuFolder[]>(() => {
-    const saved = localStorage.getItem(foldersKey);
-    return saved ? JSON.parse(saved) : [
-      { id: "fld_1", name: "Stove" },
-      { id: "fld_2", name: "Wok" },
-      { id: "fld_3", name: "Base Sauce" }
-    ];
-  });
+  const [folders, setFolders] = useState<MenuFolder[]>([
+    { id: "fld_1", name: "Stove" },
+    { id: "fld_2", name: "Wok" },
+    { id: "fld_3", name: "Base Sauce" }
+  ]);
 
-  const [activeFolderId, setActiveFolderId] = useState<string>(() => folders[0]?.id || "fld_1");
+  const [activeFolderId, setActiveFolderId] = useState<string>("fld_1");
   const [searchTerm, setSearchTerm] = useState("");
-
-  const [menuItems, setMenuItems] = useState<MenuItem[]>(() => {
-    const saved = localStorage.getItem(menuKey);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [recipeCosts, setRecipeCosts] = useState<{ [key: string]: number }>({});
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [name, setName] = useState("");
   const [price, setPrice] = useState<number | "">("");
-  const [selectedFolderId, setSelectedFolderId] = useState<string>(folders[0]?.id || "fld_1");
+  const [selectedFolderId, setSelectedFolderId] = useState<string>("fld_1");
 
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
   const [editingFolder, setEditingFolder] = useState<MenuFolder | null>(null);
   const [folderNameInput, setFolderNameInput] = useState("");
 
-  useEffect(() => {
-    localStorage.setItem(foldersKey, JSON.stringify(folders));
-  }, [folders, foldersKey]);
+  const fetchRecipes = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('recipes')
+        .select('*')
+        .eq('store_id', storeId);
+
+      if (error) throw error;
+
+      if (data) {
+        const formattedItems: MenuItem[] = data.map((item: any) => ({
+          id: item.id,
+          name: item.title,
+          price: Number(item.selling_price || 0),
+          folderId: item.folder_id || "fld_1"
+        }));
+        setMenuItems(formattedItems);
+      }
+    } catch (err) {
+      console.error("Failed to fetch recipes from Supabase:", err);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem(menuKey, JSON.stringify(menuItems));
-  }, [menuItems, menuKey]);
+    fetchRecipes();
+  }, [storeId]);
 
   useEffect(() => {
     if (editingItem) {
@@ -86,20 +98,7 @@ export default function StoreMenu() {
         storeId,
         folders,
         menuItems,
-        recipes: {}
       };
-
-      menuItems.forEach((item) => {
-        const recipeData = localStorage.getItem(`recipe_${item.id}${userPrefix}`);
-        if (recipeData) {
-          try {
-            exportData.recipes[item.id] = JSON.parse(recipeData);
-          } catch {
-            exportData.recipes[item.id] = [];
-          }
-        }
-      });
-
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
       const downloadAnchor = document.createElement("a");
       const today = new Date().toISOString().slice(0, 10);
@@ -125,24 +124,14 @@ export default function StoreMenu() {
     reader.onload = (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
-
         if (Array.isArray(json.folders) && json.folders.length > 0) {
           setFolders(json.folders);
           setActiveFolderId(json.folders[0].id);
         }
-
         if (Array.isArray(json.menuItems)) {
           setMenuItems(json.menuItems);
         }
-
-        if (json.recipes && typeof json.recipes === "object") {
-          Object.keys(json.recipes).forEach((menuId) => {
-            const recipeList = json.recipes[menuId];
-            localStorage.setItem(`recipe_${menuId}${userPrefix}`, JSON.stringify(recipeList));
-          });
-        }
-
-        alert("All recipes & folders imported successfully!");
+        alert("Imported successfully!");
       } catch (err) {
         alert("Failed to parse the backup file.");
         console.error(err);
@@ -177,38 +166,68 @@ export default function StoreMenu() {
       alert("You must keep at least one folder.");
       return;
     }
-    if (confirm("Delete this folder? Recipes inside will be deleted.")) {
+    if (confirm("Delete this folder?")) {
       const nextFolders = folders.filter(f => f.id !== id);
       setFolders(nextFolders);
       if (activeFolderId === id) setActiveFolderId(nextFolders[0].id);
     }
   };
 
-  const handleCreateOrUpdate = (e: React.FormEvent) => {
+  const handleCreateOrUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || price === "") return;
 
-    if (editingItem) {
-      setMenuItems(menuItems.map(item =>
-        item.id === editingItem.id ? { ...item, name, price: Number(price), folderId: selectedFolderId } : item
-      ));
-    } else {
-      const newItem: MenuItem = {
-        id: Date.now().toString(),
-        name,
-        price: Number(price),
-        folderId: selectedFolderId
-      };
-      setMenuItems([...menuItems, newItem]);
+    try {
+      if (editingItem) {
+        const { error } = await supabase
+          .from('recipes')
+          .update({
+            title: name,
+            selling_price: Number(price),
+            folder_id: selectedFolderId
+          })
+          .eq('id', editingItem.id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('recipes')
+          .insert({
+            store_id: storeId,
+            title: name,
+            selling_price: Number(price),
+            folder_id: selectedFolderId
+          });
+
+        if (error) throw error;
+      }
+
+      await fetchRecipes();
+      closeModal();
+    } catch (err) {
+      console.error("Failed to save menu item to Supabase:", err);
+      alert("Failed to save data to database.");
     }
-    closeModal();
   };
 
-  const handleDelete = (id: string, e: React.MouseEvent) => {
+  // Supabase에서 메뉴 삭제 및 화면 상태 즉시 반영
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Are you sure you want to delete this menu item?")) {
-      setMenuItems(menuItems.filter(item => item.id !== id));
-      localStorage.removeItem(`recipe_${id}${userPrefix}`);
+      try {
+        const { error } = await supabase
+          .from('recipes')
+          .delete()
+          .eq('id', id);
+
+        if (error) throw error;
+
+        // 화면 목록에서 즉시 제거
+        setMenuItems(prev => prev.filter(item => item.id !== id));
+      } catch (err) {
+        console.error("Failed to delete recipe from Supabase:", err);
+        alert("Failed to delete from database.");
+      }
     }
   };
 
@@ -228,29 +247,25 @@ export default function StoreMenu() {
             </Button>
           </Link>
           <div>
-            <h1 className="text-2xl font-bold">Recipe & Menu Folders</h1>
-            <p className="text-gray-500 text-sm">Organize recipes into clean custom folders.</p>
+            <h1 className="text-2xl font-bold">Recipe & Menu Folders (Supabase Sync)</h1>
+            <p className="text-gray-500 text-sm">Organize recipes with cloud synchronization.</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           <input type="file" accept=".json" ref={fileInputRef} onChange={handleImportRecipes} className="hidden" />
-
           <Button variant="outline" onClick={handleExportRecipes} className="flex items-center gap-2 bg-green-50 text-green-700 border-green-200 hover:bg-green-100">
             <Download size={16} /> Export JSON
           </Button>
-
           <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100">
             <Upload size={16} /> Import JSON
           </Button>
-
           <Button onClick={() => { setEditingItem(null); setIsModalOpen(true); }} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white">
             <Plus size={16} /> Add Recipe / Menu
           </Button>
         </div>
       </div>
 
-      {/* 폴더 탭 영역 */}
       <div className="space-y-2 border-b pb-4">
         <div className="flex justify-between items-center">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Recipe Folders</p>
@@ -291,33 +306,26 @@ export default function StoreMenu() {
         </div>
       </div>
 
-      {/* 실시간 알파벳 검색창 */}
       <div className="flex items-center gap-2 bg-white px-3 py-2.5 rounded-xl border border-slate-200 shadow-sm">
         <Search size={18} className="text-slate-400 ml-1" />
         <input 
           type="text" 
-          placeholder="Search recipe by alphabet (e.g. Soup, Beef, Kimchi)..." 
+          placeholder="Search recipe by alphabet..." 
           value={searchTerm} 
           onChange={(e) => setSearchTerm(e.target.value)} 
           className="w-full outline-none text-sm text-slate-800 bg-transparent placeholder:text-slate-400" 
         />
       </div>
 
-      {/* 한 줄 리스트 (원가, 마진, 마진율 한눈에 보기) */}
       <div className="space-y-3">
         {filteredMenuItems.map((item) => {
-          // 해당 레시피에 저장된 재료 데이터를 불러와 실시간 원가/마진 계산
-          const savedRecipe = localStorage.getItem(`recipe_${item.id}${userPrefix}`);
-          const recipeIngredients = savedRecipe ? JSON.parse(savedRecipe) : [];
-          const totalFoodCost = recipeIngredients.reduce((sum: number, ri: any) => sum + (ri.totalCost || 0), 0);
           const sellingPrice = item.price || 0;
+          const totalFoodCost = 0; 
           const marginDollar = sellingPrice - totalFoodCost;
           const marginRatio = sellingPrice > 0 ? (marginDollar / sellingPrice) * 100 : 0;
 
           return (
             <div key={item.id} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs hover:shadow-md transition-all flex items-center justify-between gap-4">
-              
-              {/* 좌측: 레시피 이름 및 판매가 */}
               <div className="space-y-1 pl-1 min-w-[200px]">
                 <h3 className="text-base font-black text-slate-900 tracking-tight">{item.name}</h3>
                 <p className="text-xs font-semibold text-slate-500">
@@ -325,7 +333,6 @@ export default function StoreMenu() {
                 </p>
               </div>
 
-              {/* 중앙: 원가, 마진, 마진율 요약 정보 */}
               <div className="flex items-center gap-6 px-4 py-1.5 bg-slate-50 rounded-xl border border-slate-100 text-xs">
                 <div>
                   <p className="text-slate-400 font-medium">Food Cost</p>
@@ -341,10 +348,9 @@ export default function StoreMenu() {
                 </div>
               </div>
 
-              {/* 우측: 작은 정사각형 View 버튼 + 수정/삭제 아이콘 */}
               <div className="flex items-center gap-2">
                 <Link href={`/menu-items/${item.id}`}>
-                  <Button title="View Recipe & Cost Analysis" className="bg-slate-900 hover:bg-slate-800 text-white w-10 h-10 p-0 rounded-xl flex items-center justify-center shadow-xs">
+                  <Button title="View Recipe" className="bg-slate-900 hover:bg-slate-800 text-white w-10 h-10 p-0 rounded-xl flex items-center justify-center shadow-xs">
                     <Calculator size={18} />
                   </Button>
                 </Link>
@@ -369,7 +375,6 @@ export default function StoreMenu() {
         )}
       </div>
 
-      {/* 폴더 추가/수정 모달 */}
       {isFolderModalOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl">
@@ -388,7 +393,6 @@ export default function StoreMenu() {
         </div>
       )}
 
-      {/* 메뉴 추가/수정 모달 */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl">

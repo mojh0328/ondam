@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 type Store = {
   id: string;
@@ -14,22 +15,36 @@ type Store = {
 
 export default function Stores() {
   const { currentUser, logout, showConfirm } = useAuth();
-
-  const [stores, setStores] = useState<Store[]>(() => {
-    const saved = localStorage.getItem("stores");
-    return saved ? JSON.parse(saved) : [
-      { id: "13", name: "Ondam Restaurant", description: "Main branch recipes & costing" }
-    ];
-  });
+  const [stores, setStores] = useState<Store[]>([]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStore, setEditingStore] = useState<Store | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
+  // Supabase에서 지점 목록 불러오기
+  const fetchStores = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('stores')
+        .select('*');
+
+      if (error) throw error;
+      if (data) {
+        setStores(data.map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          description: s.description || ""
+        })));
+      }
+    } catch (err) {
+      console.error("Failed to fetch stores from Supabase:", err);
+    }
+  };
+
   useEffect(() => {
-    localStorage.setItem("stores", JSON.stringify(stores));
-  }, [stores]);
+    fetchStores();
+  }, []);
 
   const handleOpenModal = (store?: Store) => {
     if (store) {
@@ -44,29 +59,53 @@ export default function Stores() {
     setIsModalOpen(true);
   };
 
-  const handleSaveStore = (e: React.FormEvent) => {
+  // Supabase에 지점 추가 또는 수정 (디버깅 팝업 포함)
+  const handleSaveStore = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    if (editingStore) {
-      setStores(stores.map(s => s.id === editingStore.id ? { ...s, name, description } : s));
-    } else {
-      const newStore: Store = {
-        id: Date.now().toString(),
-        name,
-        description
-      };
-      setStores([...stores, newStore]);
+    try {
+      if (editingStore) {
+        const { error } = await supabase
+          .from('stores')
+          .update({ name, description })
+          .eq('id', editingStore.id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('stores')
+          .insert({ name, description });
+
+        if (error) throw error;
+      }
+
+      await fetchStores();
+      setIsModalOpen(false);
+      alert("Store saved successfully to Supabase!");
+    } catch (err: any) {
+      console.error("Failed to save store to Supabase:", err);
+      alert(`Store save failed: ${err.message || JSON.stringify(err)}`);
     }
-    setIsModalOpen(false);
   };
 
-  // 모던 Confirm 모달 적용
+  // Supabase에서 지점 삭제
   const handleDeleteStore = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    showConfirm("Delete this store? All menu items inside will be removed.", () => {
-      setStores(stores.filter(s => s.id !== id));
-      localStorage.removeItem(`store_menu_${id}`);
+    showConfirm("Delete this store? All menu items inside will be removed.", async () => {
+      try {
+        const { error } = await supabase
+          .from('stores')
+          .delete()
+          .eq('id', id);
+
+        if (error) throw error;
+
+        setStores(stores.filter(s => s.id !== id));
+      } catch (err: any) {
+        console.error("Failed to delete store:", err);
+        alert(`Failed to delete store: ${err.message || err}`);
+      }
     });
   };
 
@@ -75,7 +114,7 @@ export default function Stores() {
       {/* 상단 헤더 및 사용자 계정 메뉴 */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b pb-6">
         <div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Restaurant Costing System</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Restaurant Costing System (Cloud Sync)</h1>
           <p className="text-gray-500 text-sm mt-1">Manage master ingredients, stores, and recipe food costs.</p>
         </div>
 

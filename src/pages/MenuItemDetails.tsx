@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 type MasterIngredient = {
   id: string;
@@ -36,35 +37,10 @@ export default function MenuItemDetails() {
   const [, params] = useRoute("/menu-items/:id");
   const menuItemId = params?.id || "1";
   const { currentUser } = useAuth();
-  const userPrefix = currentUser ? `_user_${currentUser.username}` : "";
 
-  // 메뉴 정보 및 소속 매장 ID 정확히 탐색
-  const [menuItem, setMenuItem] = useState<MenuItem | null>(() => {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith("store_menu_") && key.includes(userPrefix)) {
-        const parts = key.replace("store_menu_", "").split("_user_");
-        const currentStoreId = parts[0];
-        const items = JSON.parse(localStorage.getItem(key) || "[]");
-        const found = items.find((m: MenuItem) => String(m.id) === String(menuItemId));
-        if (found) {
-          return { ...found, storeId: currentStoreId };
-        }
-      }
-    }
-    // 기본 폴백
-    return { id: menuItemId, storeId: "13", name: "Recipe Menu", price: 0 };
-  });
-
-  const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>(() => {
-    const saved = localStorage.getItem(`recipe_${menuItemId}${userPrefix}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [masterIngredients, setMasterIngredients] = useState<MasterIngredient[]>(() => {
-    const saved = localStorage.getItem(`master_ingredients${userPrefix}`);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [menuItem, setMenuItem] = useState<MenuItem | null>(null);
+  const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([]);
+  const [masterIngredients, setMasterIngredients] = useState<MasterIngredient[]>([]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
@@ -74,15 +50,101 @@ export default function MenuItemDetails() {
   const [quantityGrams, setQuantityGrams] = useState<number | "">("");
   const [bulkText, setBulkText] = useState("");
 
+  // 1. 메뉴 정보 및 마스터 식자재, 레시피 매핑 데이터 Supabase에서 불러오기
+  const fetchRecipeDetails = async () => {
+    try {
+      // 메뉴 정보 가져오기
+      const { data: menuData, error: menuError } = await supabase
+        .from('recipes')
+        .select('*')
+        .eq('id', menuItemId)
+        .single();
+
+      if (menuError) throw menuError;
+      if (menuData) {
+        setMenuItem({
+          id: menuData.id,
+          storeId: menuData.store_id || "1",
+          name: menuData.title,
+          price: Number(menuData.selling_price || 0)
+        });
+      }
+
+      // 마스터 식자재 목록 가져오기 (원가 계산용)
+      const { data: ingData, error: ingError } = await supabase
+        .from('ingredients')
+        .select('*');
+
+      if (ingError) throw ingError;
+      const formattedMaster: MasterIngredient[] = (ingData || []).map((item: any) => {
+        const amt = Number(item.purchase_amount || 1000);
+        const prc = Number(item.total_price || 0);
+        const yP = Number(item.yield_percent ?? 100);
+        const u = item.unit || "g";
+
+        let rawGrams = amt;
+        if (u === "kg" || u === "L") rawGrams = amt * 1000;
+        const validGrams = rawGrams * (yP / 100);
+        const costG = validGrams > 0 ? prc / validGrams : prc / rawGrams;
+
+        return {
+          id: item.id,
+          name: item.name,
+          purchaseAmount: amt,
+          unit: u,
+          totalPrice: prc,
+          yieldPercent: yP,
+          costPerGram: costG
+        };
+      });
+      setMasterIngredients(formattedMaster);
+
+      // 해당 레시피에 매핑된 재료들 가져오기 (recipe_ingredients)
+      const { data: mapData, error: mapError } = await supabase
+        .from('recipe_ingredients')
+        .select('*, ingredients(name, total_price, purchase_amount, unit, yield_percent)')
+        .eq('recipe_id', menuItemId);
+
+      if (mapError) throw mapError;
+      if (mapData) {
+        const formattedRecipeIngs: RecipeIngredient[] = mapData.map((ri: any) => {
+          const ing = ri.ingredients;
+          const amt = Number(ing?.purchase_amount || 1000);
+          const prc = Number(ing?.total_price || 0);
+          const yP = Number(ing?.yield_percent ?? 100);
+          const u = ing?.unit || "g";
+
+          let rawGrams = amt;
+          if (u === "kg" || u === "L") rawGrams = amt * 1000;
+          const validGrams = rawGrams * (yP / 100);
+          const costG = validGrams > 0 ? prc / validGrams : prc / rawGrams;
+
+          const qty = Number(ri.quantity);
+          const cost = qty * costG;
+
+          return {
+            id: ri.id,
+            ingredientId: ri.ingredient_id,
+            name: ing?.name || "Unknown",
+            quantityGrams: qty,
+            costPerGram: costG,
+            totalCost: cost
+          };
+        });
+        setRecipeIngredients(formattedRecipeIngs);
+      }
+    } catch (err) {
+      console.error("Failed to fetch recipe details from Supabase:", err);
+    }
+  };
+
   useEffect(() => {
-    localStorage.setItem(`recipe_${menuItemId}${userPrefix}`, JSON.stringify(recipeIngredients));
-  }, [recipeIngredients, menuItemId, userPrefix]);
+    fetchRecipeDetails();
+  }, [menuItemId]);
 
   const totalFoodCost = recipeIngredients.reduce((sum, item) => sum + item.totalCost, 0);
   const sellingPrice = menuItem?.price || 0;
   const marginDollar = sellingPrice - totalFoodCost;
-  
-  // 마진율 대신 원가율(Food Cost %) 계산
   const foodCostRatio = sellingPrice > 0 ? (totalFoodCost / sellingPrice) * 100 : 0;
 
   const filteredMasterList = masterIngredients.filter(m =>
@@ -95,24 +157,30 @@ export default function MenuItemDetails() {
     setIsDropdownOpen(false);
   };
 
-  const handleAddIngredient = (e: React.FormEvent) => {
+  // Supabase에 레시피 재료 추가
+  const handleAddIngredient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedIngredient || quantityGrams === "") return;
 
     const qty = Number(quantityGrams);
-    const cost = qty * selectedIngredient.costPerGram;
 
-    const newItem: RecipeIngredient = {
-      id: Date.now().toString(),
-      ingredientId: selectedIngredient.id,
-      name: selectedIngredient.name,
-      quantityGrams: qty,
-      costPerGram: selectedIngredient.costPerGram,
-      totalCost: cost
-    };
+    try {
+      const { error } = await supabase
+        .from('recipe_ingredients')
+        .insert({
+          recipe_id: menuItemId,
+          ingredient_id: selectedIngredient.id,
+          quantity: qty
+        });
 
-    setRecipeIngredients([...recipeIngredients, newItem]);
-    closeModal();
+      if (error) throw error;
+
+      await fetchRecipeDetails();
+      closeModal();
+    } catch (err) {
+      console.error("Failed to add ingredient to recipe:", err);
+      alert("Failed to save recipe ingredient.");
+    }
   };
 
   const closeModal = () => {
@@ -123,14 +191,14 @@ export default function MenuItemDetails() {
     setQuantityGrams("");
   };
 
-  const handleBulkSubmit = (e: React.FormEvent) => {
+  const handleBulkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
-    const newItems: RecipeIngredient[] = [];
+    const newInserts: any[] = [];
 
-    lines.forEach((line, idx) => {
+    lines.forEach((line) => {
       const parts = line.trim().split(/,|\t|\s+/).map(p => p.trim()).filter(Boolean);
       if (parts.length >= 2) {
         const searchName = parts[0].toLowerCase();
@@ -138,33 +206,51 @@ export default function MenuItemDetails() {
 
         const master = masterIngredients.find(m => m.name.toLowerCase().includes(searchName));
         if (master && qty > 0) {
-          const cost = qty * master.costPerGram;
-          newItems.push({
-            id: (Date.now() + idx).toString(),
-            ingredientId: master.id,
-            name: master.name,
-            quantityGrams: qty,
-            costPerGram: master.costPerGram,
-            totalCost: cost
+          newInserts.push({
+            recipe_id: menuItemId,
+            ingredient_id: master.id,
+            quantity: qty
           });
         }
       }
     });
 
-    if (newItems.length > 0) {
-      setRecipeIngredients(prev => [...prev, ...newItems]);
-      alert(`${newItems.length} ingredients added!`);
-      setBulkText("");
-      setIsBulkModalOpen(false);
+    if (newInserts.length > 0) {
+      try {
+        const { error } = await supabase.from('recipe_ingredients').insert(newInserts);
+        if (error) throw error;
+
+        await fetchRecipeDetails();
+        alert(`${newInserts.length} ingredients added successfully!`);
+        setBulkText("");
+        setIsBulkModalOpen(false);
+      } catch (err) {
+        console.error("Bulk insert failed:", err);
+        alert("Failed to bulk insert recipe ingredients.");
+      }
     }
   };
 
-  const handleDelete = (id: string) => {
-    setRecipeIngredients(recipeIngredients.filter(item => item.id !== id));
+  // Supabase에서 레시피 재료 삭제
+  const handleDelete = async (id: string) => {
+    if (confirm("Delete this ingredient from recipe?")) {
+      try {
+        const { error } = await supabase
+          .from('recipe_ingredients')
+          .delete()
+          .eq('id', id);
+
+        if (error) throw error;
+
+        setRecipeIngredients(recipeIngredients.filter(item => item.id !== id));
+      } catch (err) {
+        console.error("Failed to delete recipe ingredient:", err);
+        alert("Failed to delete from database.");
+      }
+    }
   };
 
-  // 소속된 매장 ID로 정확히 돌아가기
-  const backStoreId = menuItem?.storeId || "13";
+  const backStoreId = menuItem?.storeId || "00000000-0000-0000-0000-000000000001";
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-8">
@@ -175,11 +261,11 @@ export default function MenuItemDetails() {
           </Button>
         </Link>
         <div>
-          <h1 className="text-2xl font-bold">Recipe & Cost Analysis</h1>
+          <h1 className="text-2xl font-bold">Recipe & Cost Analysis (Cloud Sync)</h1>
         </div>
       </div>
 
-      {/* 요약 카드 (마진율 -> 원가율 변경 완료) */}
+      {/* 요약 카드 */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="p-4 space-y-1">
           <p className="text-xs text-gray-500 font-medium">Selling Price ($ AUD)</p>
@@ -273,7 +359,7 @@ export default function MenuItemDetails() {
                       setIsDropdownOpen(true);
                     }}
                     onFocus={() => setIsDropdownOpen(true)}
-                    placeholder="Type to search (e.g. Por, Gar, Soy)..."
+                    placeholder="Type to search..."
                     className="pl-9 bg-slate-50 rounded-xl"
                   />
                 </div>

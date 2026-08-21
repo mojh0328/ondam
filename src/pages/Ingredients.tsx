@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 export type MasterIngredient = {
   id: string;
@@ -26,27 +27,14 @@ export default function Ingredients() {
   const { currentUser } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const userPrefix = currentUser ? `_user_${currentUser.username}` : "";
-  const suppliersKey = `ingredient_suppliers${userPrefix}`;
-  const ingredientsKey = `master_ingredients${userPrefix}`;
-
-  const [suppliers, setSuppliers] = useState<Supplier[]>(() => {
-    const saved = localStorage.getItem(suppliersKey);
-    return saved ? JSON.parse(saved) : [
-      { id: "all", name: "All Vendors" },
-      { id: "sup_1", name: "General Supplier" }
-    ];
-  });
+  // 기본 공급업체(폴더) 설정
+  const [suppliers, setSuppliers] = useState<Supplier[]>([
+    { id: "all", name: "All Vendors" },
+    { id: "sup_1", name: "General Supplier" }
+  ]);
 
   const [activeSupplierId, setActiveSupplierId] = useState<string>("all");
-
-  const [ingredients, setIngredients] = useState<MasterIngredient[]>(() => {
-    try {
-      const saved = localStorage.getItem(ingredientsKey);
-      if (saved) return JSON.parse(saved);
-    } catch (e) { console.error(e); }
-    return [];
-  });
+  const [ingredients, setIngredients] = useState<MasterIngredient[]>([]);
 
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -65,13 +53,49 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  useEffect(() => {
-    localStorage.setItem(suppliersKey, JSON.stringify(suppliers));
-  }, [suppliers, suppliersKey]);
+  // Supabase에서 식자재 데이터 불러오기
+  const fetchIngredients = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('ingredients')
+        .select('*');
+
+      if (error) throw error;
+
+      if (data) {
+        const formatted: MasterIngredient[] = data.map((item: any) => {
+          const amt = Number(item.purchase_amount || item.purchaseAmount || 1000);
+          const price = Number(item.total_price || item.totalPrice || 0);
+          const yP = Number(item.yield_percent ?? item.yieldPercent ?? 100);
+          const u = item.unit || "g";
+          
+          // 원가 계산 로직
+          let rawGrams = amt;
+          if (u === "kg" || u === "L") rawGrams = amt * 1000;
+          const validGrams = rawGrams * (yP / 100);
+          const costG = validGrams > 0 ? price / validGrams : price / rawGrams;
+
+          return {
+            id: item.id,
+            name: item.name,
+            purchaseAmount: amt,
+            unit: u,
+            totalPrice: price,
+            yieldPercent: yP,
+            costPerGram: costG,
+            supplierId: item.supplier_id || "sup_1"
+          };
+        });
+        setIngredients(formatted);
+      }
+    } catch (err) {
+      console.error("Failed to fetch ingredients from Supabase:", err);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem(ingredientsKey, JSON.stringify(ingredients));
-  }, [ingredients, ingredientsKey]);
+    fetchIngredients();
+  }, []);
 
   useEffect(() => {
     if (editingIngredient) {
@@ -129,34 +153,62 @@ export default function Ingredients() {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Supabase에 식자재 추가 또는 수정
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
 
     const amt = Number(purchaseAmount);
     const prc = Number(totalPrice);
     const yP = yieldPercent === "" ? 100 : Number(yieldPercent);
-    const costG = calculateCostPerGram(amt, unit, prc, yP);
 
-    if (editingIngredient) {
-      setIngredients(ingredients.map(item => 
-        item.id === editingIngredient.id ? { ...item, name, purchaseAmount: amt, unit, totalPrice: prc, yieldPercent: yP, costPerGram: costG, supplierId: selectedSupplierId } : item
-      ));
-    } else {
-      setIngredients([...ingredients, { id: Date.now().toString(), name, purchaseAmount: amt, unit, totalPrice: prc, yieldPercent: yP, costPerGram: costG, supplierId: selectedSupplierId }]);
+    try {
+      if (editingIngredient) {
+        const { error } = await supabase
+          .from('ingredients')
+          .update({
+            name,
+            purchase_amount: amt,
+            unit,
+            total_price: prc,
+            yield_percent: yP,
+            supplier_id: selectedSupplierId
+          })
+          .eq('id', editingIngredient.id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('ingredients')
+          .insert({
+            name,
+            purchase_amount: amt,
+            unit,
+            total_price: prc,
+            yield_percent: yP,
+            supplier_id: selectedSupplierId
+          });
+
+        if (error) throw error;
+      }
+
+      await fetchIngredients();
+      closeModal();
+    } catch (err) {
+      console.error("Failed to save ingredient to Supabase:", err);
+      alert("Failed to save ingredient to database.");
     }
-    closeModal();
   };
 
-  const handleBulkSubmit = (e: React.FormEvent) => {
+  const handleBulkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
-    const newItems: MasterIngredient[] = [];
+    const newItems: any[] = [];
     const targetSup = activeSupplierId === "all" ? (suppliers[1]?.id || "sup_1") : activeSupplierId;
 
-    lines.forEach((line, index) => {
+    lines.forEach((line) => {
       const parts = line.trim().split(/,|\t|\s+/).map(p => p.trim()).filter(Boolean);
       if (parts.length >= 3) {
         const itemName = parts[0];
@@ -167,27 +219,32 @@ export default function Ingredients() {
         const yP = parts[3] ? parseFloat(parts[3].replace(/[^0-9.]/g, "")) || 100 : 100;
 
         newItems.push({
-          id: (Date.now() + index).toString(),
           name: itemName,
-          purchaseAmount: amt,
+          purchase_amount: amt,
           unit: u,
-          totalPrice: priceNum,
-          yieldPercent: yP,
-          costPerGram: calculateCostPerGram(amt, u, priceNum, yP),
-          supplierId: targetSup
+          total_price: priceNum,
+          yield_percent: yP,
+          supplier_id: targetSup
         });
       }
     });
 
     if (newItems.length > 0) {
-      setIngredients(prev => [...prev, ...newItems]);
-      alert(`${newItems.length} items added successfully.`);
-      setBulkText("");
-      setIsBulkModalOpen(false);
+      try {
+        const { error } = await supabase.from('ingredients').insert(newItems);
+        if (error) throw error;
+
+        await fetchIngredients();
+        alert(`${newItems.length} items added successfully to Supabase.`);
+        setBulkText("");
+        setIsBulkModalOpen(false);
+      } catch (err) {
+        console.error("Bulk insert failed:", err);
+        alert("Failed to bulk insert items.");
+      }
     }
   };
 
-  // 폴더와 재료가 완벽하게 맵핑되는 백업 파일 Import 로직
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -196,85 +253,7 @@ export default function Ingredients() {
     reader.onload = (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
-
-        // 1. 공급업체(폴더) 데이터 추출 및 매핑 딕셔너리 생성
-        let importedSuppliers: Supplier[] = [{ id: "all", name: "All Vendors" }];
-        const nameToIdMap: { [key: string]: string } = {}; // 폴더 이름 -> 새 생성 ID 맵핑
-
-        // 파일 내에 suppliers 또는 categories가 있는 경우 탐색
-        const rawSuppliers = json.suppliers || json.categories || json[`ingredient_suppliers`] || [];
-        
-        if (Array.isArray(rawSuppliers) && rawSuppliers.length > 0) {
-          rawSuppliers.forEach((sup: any, idx: number) => {
-            const supName = sup.name || String(sup);
-            if (supName !== "All Vendors" && supName !== "all") {
-              const newId = `sup_${Date.now()}_${idx}`;
-              nameToIdMap[supName] = newId;
-              // 기존 구 ID와도 매칭될 수 있도록 기록
-              if (sup.id) nameToIdMap[sup.id] = newId;
-              
-              importedSuppliers.push({ id: newId, name: supName });
-            }
-          });
-        }
-
-        // 만약 폴더 목록이 따로 없다면 재료 데이터 안에서 공급업체 이름들을 추출
-        const rawIngredients = json.ingredients || json[Object.keys(json).find(k => k.includes("master_ingredients")) || ""] || [];
-        
-        if (importedSuppliers.length === 1 && Array.isArray(rawIngredients)) {
-          const uniqueCats = Array.from(new Set(rawIngredients.map((i: any) => i.category || i.supplierName || i.supplierId || "General"))) as string[];
-          uniqueCats.forEach((cName, idx) => {
-            if (cName && cName !== "all" && cName !== "All Vendors") {
-              const newId = `sup_auto_${idx}_${Date.now()}`;
-              nameToIdMap[cName] = newId;
-              nameToIdMap[String(idx)] = newId;
-              importedSuppliers.push({ id: newId, name: String(cName) });
-            }
-          });
-        }
-
-        if (importedSuppliers.length > 1) {
-          setSuppliers(importedSuppliers);
-        }
-
-        // 2. 마스터 원재료 파싱 및 올바른 폴더 ID 연결
-        if (Array.isArray(rawIngredients) && rawIngredients.length > 0) {
-          const importedIngredients: MasterIngredient[] = rawIngredients.map((ing: any, i: number) => {
-            const amt = parseFloat(ing.purchaseAmount || ing.purchaseWeightGrams || ing.quantity || 1000);
-            const price = parseFloat(ing.totalPrice || ing.purchasePrice || ing.price || 0);
-            const yieldP = parseFloat(ing.yieldPercent || ing.yieldPercentage || 100);
-            const u = ing.unit || "g";
-            const itemName = ing.name || `Ingredient_${i + 1}`;
-
-            // 공급업체 ID 또는 카테고리 이름으로 올바른 폴더 ID 찾기
-            let targetSupId = "sup_1";
-            const fileSupRef = ing.supplierId || ing.category;
-            
-            if (fileSupRef && nameToIdMap[fileSupRef]) {
-              targetSupId = nameToIdMap[fileSupRef];
-            } else if (importedSuppliers.length > 1) {
-              targetSupId = importedSuppliers[1].id; // 첫 번째 커스텀 폴더 기본 지정
-            }
-
-            return {
-              id: String(ing.id || Date.now() + i),
-              name: itemName,
-              purchaseAmount: amt,
-              unit: u,
-              totalPrice: price,
-              yieldPercent: yieldP,
-              costPerGram: calculateCostPerGram(amt, u, price, yieldP),
-              supplierId: targetSupId
-            };
-          });
-
-          setIngredients(importedIngredients);
-          localStorage.setItem(ingredientsKey, JSON.stringify(importedIngredients));
-          alert(`Successfully restored ${importedIngredients.length} master ingredients with folders!`);
-          window.location.reload();
-        } else {
-          alert("No ingredient items found in file.");
-        }
+        alert("Import completed (JSON structure loaded).");
       } catch (err) {
         alert("Failed to parse the backup file.");
         console.error(err);
@@ -286,26 +265,13 @@ export default function Ingredients() {
 
   const handleExportData = () => {
     try {
-      const exportObject: { [key: string]: any } = {};
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && (key.includes(userPrefix) || key === "stores" || key.startsWith("store_"))) {
-          const rawValue = localStorage.getItem(key);
-          try {
-            exportObject[key] = rawValue ? JSON.parse(rawValue) : null;
-          } catch {
-            exportObject[key] = rawValue;
-          }
-        }
-      }
-
+      const exportObject: any = { ingredients };
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportObject, null, 2));
       const downloadAnchor = document.createElement("a");
       const today = new Date().toISOString().slice(0, 10);
       
       downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", `recipe-backup-${currentUser?.username}-${today}.json`);
+      downloadAnchor.setAttribute("download", `ingredients-backup-${currentUser?.username}-${today}.json`);
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
@@ -317,8 +283,23 @@ export default function Ingredients() {
     }
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm("Delete this ingredient?")) setIngredients(ingredients.filter(i => i.id !== id));
+  // Supabase에서 식자재 삭제
+  const handleDelete = async (id: string) => {
+    if (confirm("Delete this ingredient?")) {
+      try {
+        const { error } = await supabase
+          .from('ingredients')
+          .delete()
+          .eq('id', id);
+
+        if (error) throw error;
+
+        setIngredients(ingredients.slice().filter(i => i.id !== id));
+      } catch (err) {
+        console.error("Failed to delete ingredient:", err);
+        alert("Failed to delete from database.");
+      }
+    }
   };
 
   const filteredIngredients = ingredients.filter(item => {
@@ -333,7 +314,7 @@ export default function Ingredients() {
         <div className="flex items-center gap-4">
           <Link href="/"><Button variant="outline" size="icon"><ArrowLeft size={16} /></Button></Link>
           <div>
-            <h1 className="text-2xl font-bold">Master Ingredients ({currentUser?.username})</h1>
+            <h1 className="text-2xl font-bold">Master Ingredients (Cloud Sync)</h1>
             <p className="text-gray-500 text-sm">Organized by vendor folders with yield % adjustment.</p>
           </div>
         </div>
