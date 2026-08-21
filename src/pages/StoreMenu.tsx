@@ -183,7 +183,6 @@ export default function StoreMenu() {
           localStorage.setItem(folderKey, JSON.stringify(importedFolders));
         }
 
-        // 🌟 백업 파일에 마스터 재료가 포함되어 있다면 Supabase에 함께 연동
         const rawMaster = json.master_ingredients || json.ingredients || [];
         if (Array.isArray(rawMaster) && rawMaster.length > 0 && currentUser?.username) {
           const rowsToInsert = rawMaster.map((item: any) => ({
@@ -199,21 +198,48 @@ export default function StoreMenu() {
         }
 
         const itemsToImport = json.menuItems || [];
+        const recipesMap = json.recipes || {};
+
         if (Array.isArray(itemsToImport) && itemsToImport.length > 0) {
           const defaultFolderId = importedFolders[0]?.id || "default";
 
           for (const item of itemsToImport) {
-            await supabase.from('recipes').insert([{
+            const { data: insertedRecipe, error: recError } = await supabase.from('recipes').insert([{
               user_id: currentUser?.username || 'default',
               store_id: storeId,
               folder_id: item.folderId || defaultFolderId,
               title: item.name || item.title || "Untitled",
               selling_price: Number(item.price || 0)
-            }]);
+            }]).select().single();
+
+            if (recError || !insertedRecipe) continue;
+
+            const newRecipeId = insertedRecipe.id;
+            const rawIngredients = item.ingredients || recipesMap[item.id] || recipesMap[item.name] || [];
+
+            if (Array.isArray(rawIngredients) && rawIngredients.length > 0) {
+              const riRows = rawIngredients.map((ing: any) => {
+                const qty = Number(ing.quantityGrams || ing.quantity_grams || ing.quantity || 0);
+                const cpg = Number(ing.costPerGram || ing.cost_per_gram || 0);
+                return {
+                  recipe_id: newRecipeId,
+                  ingredient_id: ing.ingredientId || ing.ingredient_id || String(Date.now()),
+                  ingredient_name: ing.name || ing.ingredient_name || "Ingredient",
+                  quantity: qty,
+                  quantity_grams: qty,
+                  display_unit: ing.displayUnit || ing.display_unit || "g",
+                  cost_per_gram: cpg,
+                  total_cost: Number(ing.totalCost || ing.total_cost || (qty * cpg)),
+                  section_name: ing.sectionName || ing.section_name || "Stove"
+                };
+              });
+
+              await supabase.from('recipe_ingredients').insert(riRows);
+            }
           }
 
           await fetchRecipes();
-          alert(`Successfully imported ${itemsToImport.length} menu items and cloud data!`);
+          alert(`Successfully imported ${itemsToImport.length} menu items and recipe details!`);
         } else {
           alert("No menu items found in this backup file.");
         }
