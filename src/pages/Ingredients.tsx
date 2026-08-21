@@ -52,7 +52,7 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  // Supabase에서 재료 데이터 불러오기
+  // Supabase에서 재료 데이터 불러오기 (레시피와 동일한 전체 조회 방식)
   const fetchIngredients = async () => {
     try {
       const { data, error } = await supabase
@@ -156,8 +156,7 @@ export default function Ingredients() {
       unit,
       total_price: prc,
       yield_percent: yP,
-      supplier_id: selectedSupplierId,
-      user_id: currentUser?.username || "admin"
+      supplier_id: selectedSupplierId
     };
 
     try {
@@ -208,8 +207,7 @@ export default function Ingredients() {
           unit: u,
           total_price: priceNum,
           yield_percent: yP,
-          supplier_id: targetSup,
-          user_id: currentUser?.username || "admin"
+          supplier_id: targetSup
         });
       }
     });
@@ -230,7 +228,7 @@ export default function Ingredients() {
     }
   };
 
-  // JSON 파일 Import 시 Supabase 데이터베이스에 실제로 저장되도록 수정
+  // JSON 파일 Import 시 Supabase에 데이터가 확실히 저장되도록 연동
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -248,8 +246,7 @@ export default function Ingredients() {
             unit: item.unit || "g",
             total_price: item.totalPrice || item.total_price || 0,
             yield_percent: item.yieldPercent || item.yield_percent || 100,
-            supplier_id: item.supplierId || item.supplier_id || "sup_1",
-            user_id: currentUser?.username || "admin"
+            supplier_id: item.supplierId || item.supplier_id || "sup_1"
           }));
 
           const { error } = await supabase
@@ -496,7 +493,7 @@ export default function Ingredients() {
 
       {isBulkModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl p-6 max-w-lg w-full space-y-4">
+          <div className="bg-xl rounded-xl p-6 max-w-lg w-full space-y-4">
             <h2 className="text-lg font-bold">Bulk Input</h2>
             <form onSubmit={handleBulkSubmit} className="space-y-4">
               <textarea rows={8} value={bulkText} onChange={(e) => setBulkText(e.target.value)} placeholder="e.g. PorkBelly 1000g 14 70" className="w-full border rounded-lg p-3 text-sm font-mono outline-none" required />
