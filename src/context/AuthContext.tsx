@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 export type User = {
   id?: string;
   username: string;
+  password?: string;
   storeName?: string;
   role?: string;
   phone?: string;
@@ -11,6 +12,7 @@ export type User = {
 
 interface AuthContextType {
   currentUser: User | null;
+  registeredUsers: User[];
   login: (username: string, password?: string) => boolean;
   register: (username: string, password?: string, phone?: string) => boolean;
   logout: () => void;
@@ -30,6 +32,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   });
 
+  const [registeredUsers, setRegisteredUsers] = useState<User[]>(() => {
+    try {
+      const saved = localStorage.getItem("registered_users_list");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // 기존에 비밀번호가 없던 admin 계정 등에 기본 비밀번호 부여
+        return parsed.map((u: User) => ({
+          ...u,
+          password: u.password || "admin123"
+        }));
+      }
+    } catch {}
+    return [
+      { id: "user_admin", username: "admin", password: "admin123", storeName: "Ondam", role: "admin", phone: "0400000000" }
+    ];
+  });
+
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem("current_auth_user", JSON.stringify(currentUser));
@@ -37,6 +56,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem("current_auth_user");
     }
   }, [currentUser]);
+
+  useEffect(() => {
+    localStorage.setItem("registered_users_list", JSON.stringify(registeredUsers));
+  }, [registeredUsers]);
 
   const showConfirm = (message: string, onConfirm: () => void) => {
     if (window.confirm(message)) {
@@ -47,13 +70,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = (username: string, password?: string, phone?: string) => {
     if (!username || !username.trim()) return false;
     const cleanUsername = username.trim();
+    
+    const exists = registeredUsers.some(u => u.username.toLowerCase() === cleanUsername.toLowerCase());
+    if (exists) {
+      alert("Username already exists!");
+      return false;
+    }
+
     const newUser: User = {
       id: `user_${Date.now()}`,
       username: cleanUsername,
+      password: password || "",
       storeName: "Ondam",
       role: cleanUsername.toLowerCase() === "admin" ? "admin" : "user",
       phone: phone || ""
     };
+
+    const updatedUsers = [...registeredUsers, newUser];
+    setRegisteredUsers(updatedUsers);
+    setCurrentUser(newUser);
 
     try {
       supabase
@@ -65,37 +100,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Supabase register warning:", err);
     }
 
-    setCurrentUser(newUser);
     return true;
   };
 
   const login = (username: string, password?: string) => {
-    if (!username || !username.trim()) return false;
+    if (!username || !username.trim()) {
+      alert("Please enter a username.");
+      return false;
+    }
     const cleanUsername = username.trim();
-    const loggedUser: User = {
-      id: `user_${Date.now()}`,
-      username: cleanUsername,
-      storeName: "Ondam",
-      role: cleanUsername.toLowerCase() === "admin" ? "admin" : "user"
-    };
 
-    try {
-      supabase
-        .from("users")
-        .select("*")
-        .eq("username", cleanUsername)
-        .maybeSingle()
-        .then(({ data }) => {
-          if (data) {
-            loggedUser.id = data.id;
-            loggedUser.storeName = data.store_name || "Ondam";
-          }
-        });
-    } catch (err) {
-      console.warn("Supabase login warning:", err);
+    const foundUser = registeredUsers.find(u => u.username.toLowerCase() === cleanUsername.toLowerCase());
+    
+    if (!foundUser) {
+      alert("User not found. Please check your username or register first.");
+      return false;
     }
 
-    setCurrentUser(loggedUser);
+    // 비밀번호 필수 대조 (등록된 비밀번호와 입력한 비밀번호가 다르면 차단)
+    if (foundUser.password && foundUser.password !== password) {
+      alert("Incorrect password. Please try again.");
+      return false;
+    }
+
+    setCurrentUser(foundUser);
     return true;
   };
 
@@ -109,7 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, login, register, logout, signup, showConfirm }}>
+    <AuthContext.Provider value={{ currentUser, registeredUsers, login, register, logout, signup, showConfirm }}>
       {children}
     </AuthContext.Provider>
   );

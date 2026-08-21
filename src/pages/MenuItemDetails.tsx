@@ -1,435 +1,361 @@
 import { useState, useEffect } from "react";
 import { Link, useRoute } from "wouter";
-import { ArrowLeft, Plus, Trash2, Layers, Package, Search, Check } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Calculator, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/lib/supabase";
 
-type MasterIngredient = {
-  id: string;
-  name: string;
-  purchaseAmount?: number;
-  unit?: string;
-  totalPrice?: number;
-  yieldPercent?: number;
-  costPerGram: number;
-};
-
-type RecipeIngredient = {
+type RecipeItem = {
   id: string;
   ingredientId: string;
   name: string;
   quantityGrams: number;
+  displayUnit: string;
   costPerGram: number;
   totalCost: number;
+  sectionName: string;
 };
 
-type MenuItem = {
+type MasterIngredient = {
   id: string;
-  storeId?: string | number;
   name: string;
-  price: number;
+  costPerGram: number;
+  unit: string;
 };
 
-export default function MenuItemDetails() {
+export default function MenuItemDetail() {
   const [, params] = useRoute("/menu-items/:id");
-  const menuItemId = params?.id || "1";
+  const recipeId = params?.id || "";
   const { currentUser } = useAuth();
 
-  const [menuItem, setMenuItem] = useState<MenuItem | null>(null);
-  const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([]);
+  const [menuName, setMenuName] = useState("Recipe Menu");
+  const [sellingPrice, setSellingPrice] = useState<number>(0);
+  const [recipeIngredients, setRecipeIngredients] = useState<RecipeItem[]>([]);
   const [masterIngredients, setMasterIngredients] = useState<MasterIngredient[]>([]);
-
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [selectedIngredient, setSelectedIngredient] = useState<MasterIngredient | null>(null);
-  const [quantityGrams, setQuantityGrams] = useState<number | "">("");
   const [bulkText, setBulkText] = useState("");
 
-  // 1. 메뉴 정보 및 마스터 식자재, 레시피 매핑 데이터 Supabase에서 불러오기
-  const fetchRecipeDetails = async () => {
-    try {
-      // 메뉴 정보 가져오기
-      const { data: menuData, error: menuError } = await supabase
-        .from('recipes')
-        .select('*')
-        .eq('id', menuItemId)
-        .single();
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedMaster, setSelectedMaster] = useState<MasterIngredient | null>(null);
+  const [quantity, setQuantity] = useState<number | "">("");
+  const [sectionName, setSectionName] = useState("Stove");
 
-      if (menuError) throw menuError;
-      if (menuData) {
-        setMenuItem({
-          id: menuData.id,
-          storeId: menuData.store_id || "1",
-          name: menuData.title,
-          price: Number(menuData.selling_price || 0)
-        });
+  const storeId = "13";
+  const currentUsername = currentUser?.username || 'default';
+  const menuStorageKey = `store_menu_${storeId}_${currentUsername}`;
+
+  const fetchRecipeDetail = async () => {
+    try {
+      // 1. 계정별 레시피 및 메뉴 정보 로드
+      const savedLocal = localStorage.getItem(menuStorageKey);
+      let allRecipesData: any = {};
+      
+      if (savedLocal) {
+        const parsed = JSON.parse(savedLocal);
+        const menuList = parsed.menuItems || [];
+        const foundMenu = menuList.find((m: any) => String(m.id) === String(recipeId));
+        if (foundMenu) {
+          setMenuName(foundMenu.name || "Recipe Menu");
+          setSellingPrice(Number(foundMenu.price || 0));
+        }
+
+        allRecipesData = parsed.recipes || {};
+        const rawItems = allRecipesData[recipeId];
+        if (rawItems && Array.isArray(rawItems)) {
+          const mapped = rawItems.map((item: any) => {
+            const q = Number(item.quantityGrams || 0);
+            const c = Number(item.costPerGram || 0);
+            return {
+              id: String(item.id || Date.now() + Math.random()),
+              ingredientId: String(item.ingredientId || ""),
+              name: item.name || "",
+              quantityGrams: q,
+              displayUnit: item.displayUnit || "g",
+              costPerGram: c,
+              totalCost: Number(item.totalCost || (q * c)),
+              sectionName: item.sectionName || "Stove"
+            };
+          });
+          setRecipeIngredients(mapped);
+        }
       }
 
-      // 마스터 식자재 목록 가져오기 (원가 계산용)
-      const { data: ingData, error: ingError } = await supabase
-        .from('ingredients')
-        .select('*');
+      // 2. Supabase `ingredients` 테이블에서 현재 계정의 마스터 재료 목록 조회
+      let query = supabase.from("ingredients").select("*");
+      if (currentUser?.username) {
+        query = query.eq("user_id", currentUser.username);
+      } else {
+        query = query.eq("user_id", "default");
+      }
 
-      if (ingError) throw ingError;
-      const formattedMaster: MasterIngredient[] = (ingData || []).map((item: any) => {
-        const amt = Number(item.purchase_amount || 1000);
-        const prc = Number(item.total_price || 0);
-        const yP = Number(item.yield_percent ?? 100);
-        const u = item.unit || "g";
+      const { data: dbIngredients, error } = await query;
+      if (error) throw error;
 
-        let rawGrams = amt;
-        if (u === "kg" || u === "L") rawGrams = amt * 1000;
-        const validGrams = rawGrams * (yP / 100);
-        const costG = validGrams > 0 ? prc / validGrams : prc / rawGrams;
-
-        return {
-          id: item.id,
-          name: item.name,
-          purchaseAmount: amt,
-          unit: u,
-          totalPrice: prc,
-          yieldPercent: yP,
-          costPerGram: costG
-        };
-      });
-      setMasterIngredients(formattedMaster);
-
-      // 해당 레시피에 매핑된 재료들 가져오기 (recipe_ingredients)
-      const { data: mapData, error: mapError } = await supabase
-        .from('recipe_ingredients')
-        .select('*, ingredients(name, total_price, purchase_amount, unit, yield_percent)')
-        .eq('recipe_id', menuItemId);
-
-      if (mapError) throw mapError;
-      if (mapData) {
-        const formattedRecipeIngs: RecipeIngredient[] = mapData.map((ri: any) => {
-          const ing = ri.ingredients;
-          const amt = Number(ing?.purchase_amount || 1000);
-          const prc = Number(ing?.total_price || 0);
-          const yP = Number(ing?.yield_percent ?? 100);
-          const u = ing?.unit || "g";
-
+      if (dbIngredients && dbIngredients.length > 0) {
+        const formatted: MasterIngredient[] = dbIngredients.map((i: any) => {
+          const amt = Number(i.purchase_amount || 1000);
+          const price = Number(i.total_price || 0);
+          const yP = Number(i.yield_percent ?? 100);
+          const u = i.unit || "g";
+          
           let rawGrams = amt;
           if (u === "kg" || u === "L") rawGrams = amt * 1000;
           const validGrams = rawGrams * (yP / 100);
-          const costG = validGrams > 0 ? prc / validGrams : prc / rawGrams;
-
-          const qty = Number(ri.quantity);
-          const cost = qty * costG;
+          const costG = validGrams > 0 ? price / validGrams : price / rawGrams;
 
           return {
-            id: ri.id,
-            ingredientId: ri.ingredient_id,
-            name: ing?.name || "Unknown",
-            quantityGrams: qty,
+            id: String(i.id),
+            name: i.name,
             costPerGram: costG,
-            totalCost: cost
+            unit: u
           };
         });
-        setRecipeIngredients(formattedRecipeIngs);
+        setMasterIngredients(formatted);
+      } else {
+        setMasterIngredients([]);
       }
     } catch (err) {
-      console.error("Failed to fetch recipe details from Supabase:", err);
+      console.error("Failed to load recipe detail from Supabase:", err);
     }
   };
 
   useEffect(() => {
-    fetchRecipeDetails();
-  }, [menuItemId]);
-
-  const totalFoodCost = recipeIngredients.reduce((sum, item) => sum + item.totalCost, 0);
-  const sellingPrice = menuItem?.price || 0;
-  const marginDollar = sellingPrice - totalFoodCost;
-  const foodCostRatio = sellingPrice > 0 ? (totalFoodCost / sellingPrice) * 100 : 0;
-
-  const filteredMasterList = masterIngredients.filter(m =>
-    m.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const handleSelectIngredient = (item: MasterIngredient) => {
-    setSelectedIngredient(item);
-    setSearchQuery(item.name);
-    setIsDropdownOpen(false);
-  };
-
-  // Supabase에 레시피 재료 추가
-  const handleAddIngredient = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedIngredient || quantityGrams === "") return;
-
-    const qty = Number(quantityGrams);
-
-    try {
-      const { error } = await supabase
-        .from('recipe_ingredients')
-        .insert({
-          recipe_id: menuItemId,
-          ingredient_id: selectedIngredient.id,
-          quantity: qty
-        });
-
-      if (error) throw error;
-
-      await fetchRecipeDetails();
-      closeModal();
-    } catch (err) {
-      console.error("Failed to add ingredient to recipe:", err);
-      alert("Failed to save recipe ingredient.");
+    if (recipeId) {
+      fetchRecipeDetail();
     }
-  };
+  }, [recipeId, currentUser]);
 
-  const closeModal = () => {
+  const handleAddIngredient = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMaster || quantity === "") return;
+
+    const qty = Number(quantity);
+    const total = qty * selectedMaster.costPerGram;
+
+    const newItem: RecipeItem = {
+      id: String(Date.now()),
+      ingredientId: selectedMaster.id,
+      name: selectedMaster.name,
+      quantityGrams: qty,
+      displayUnit: selectedMaster.unit,
+      costPerGram: selectedMaster.costPerGram,
+      totalCost: total,
+      sectionName
+    };
+
+    const updated = [...recipeIngredients, newItem];
+    setRecipeIngredients(updated);
+    saveToLocalStorage(updated);
+
+    setSelectedMaster(null);
+    setQuantity("");
+    setSearchTerm("");
     setIsModalOpen(false);
-    setSelectedIngredient(null);
-    setSearchQuery("");
-    setIsDropdownOpen(false);
-    setQuantityGrams("");
   };
 
-  const handleBulkSubmit = async (e: React.FormEvent) => {
+  const handleBulkAdd = (e: React.FormEvent) => {
     e.preventDefault();
     if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
-    const newInserts: any[] = [];
+    const newItems: RecipeItem[] = [];
 
     lines.forEach((line) => {
-      const parts = line.trim().split(/,|\t|\s+/).map(p => p.trim()).filter(Boolean);
+      const parts = line.split(/[\t,]/);
       if (parts.length >= 2) {
-        const searchName = parts[0].toLowerCase();
-        const qty = parseFloat(parts[1]) || 0;
+        const name = parts[0].trim();
+        const qty = Number(parts[1].trim()) || 0;
+        const found = masterIngredients.find(m => m.name.toLowerCase() === name.toLowerCase());
+        const cpg = found ? found.costPerGram : 0;
 
-        const master = masterIngredients.find(m => m.name.toLowerCase().includes(searchName));
-        if (master && qty > 0) {
-          newInserts.push({
-            recipe_id: menuItemId,
-            ingredient_id: master.id,
-            quantity: qty
-          });
-        }
+        newItems.push({
+          id: String(Date.now() + Math.random()),
+          ingredientId: found ? found.id : String(Date.now()),
+          name,
+          quantityGrams: qty,
+          displayUnit: found ? found.unit : "g",
+          costPerGram: cpg,
+          totalCost: qty * cpg,
+          sectionName: "Stove"
+        });
       }
     });
 
-    if (newInserts.length > 0) {
-      try {
-        const { error } = await supabase.from('recipe_ingredients').insert(newInserts);
-        if (error) throw error;
-
-        await fetchRecipeDetails();
-        alert(`${newInserts.length} ingredients added successfully!`);
-        setBulkText("");
-        setIsBulkModalOpen(false);
-      } catch (err) {
-        console.error("Bulk insert failed:", err);
-        alert("Failed to bulk insert recipe ingredients.");
-      }
+    if (newItems.length > 0) {
+      const updated = [...recipeIngredients, ...newItems];
+      setRecipeIngredients(updated);
+      saveToLocalStorage(updated);
+      setBulkText("");
+      setIsBulkModalOpen(false);
     }
   };
 
-  // Supabase에서 레시피 재료 삭제
-  const handleDelete = async (id: string) => {
-    if (confirm("Delete this ingredient from recipe?")) {
-      try {
-        const { error } = await supabase
-          .from('recipe_ingredients')
-          .delete()
-          .eq('id', id);
-
-        if (error) throw error;
-
-        setRecipeIngredients(recipeIngredients.filter(item => item.id !== id));
-      } catch (err) {
-        console.error("Failed to delete recipe ingredient:", err);
-        alert("Failed to delete from database.");
-      }
+  const saveToLocalStorage = (updatedItems: RecipeItem[]) => {
+    try {
+      const savedLocal = localStorage.getItem(menuStorageKey);
+      let parsed = savedLocal ? JSON.parse(savedLocal) : { menuItems: [], recipes: {} };
+      if (!parsed.recipes) parsed.recipes = {};
+      parsed.recipes[recipeId] = updatedItems;
+      localStorage.setItem(menuStorageKey, JSON.stringify(parsed));
+    } catch (e) {
+      console.error(e);
     }
   };
 
-  const backStoreId = menuItem?.storeId || "00000000-0000-0000-0000-000000000001";
+  const handleDeleteIngredient = (id: string) => {
+    if (confirm("Delete this ingredient?")) {
+      const updated = recipeIngredients.filter(i => i.id !== id);
+      setRecipeIngredients(updated);
+      saveToLocalStorage(updated);
+    }
+  };
+
+  const filteredMasters = masterIngredients.filter(m => 
+    m.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const totalFoodCost = recipeIngredients.reduce((acc, cur) => acc + (cur.totalCost || 0), 0);
+  const margin = sellingPrice - totalFoodCost;
+  const foodCostPercent = sellingPrice > 0 ? (totalFoodCost / sellingPrice) * 100 : 0;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8">
-      <div className="flex items-center gap-4">
-        <Link href={`/stores/${backStoreId}/menu`}>
-          <Button variant="outline" size="icon">
-            <ArrowLeft size={16} />
+    <div className="p-6 max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link href={`/stores/${storeId}/menu`}>
+            <Button variant="outline" size="icon"><ArrowLeft size={16} /></Button>
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold">{menuName} - Recipe Cost Analysis</h1>
+            <p className="text-gray-500 text-sm">Detailed ingredient cost breakdown and margin.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setIsBulkModalOpen(true)} className="bg-slate-50">
+            <Layers size={16} className="mr-1" /> Bulk Input
           </Button>
-        </Link>
-        <div>
-          <h1 className="text-2xl font-bold">Recipe & Cost Analysis (Cloud Sync)</h1>
+          <Button onClick={() => setIsModalOpen(true)} className="bg-slate-900 text-white">
+            <Plus size={16} className="mr-1" /> Add Ingredient
+          </Button>
         </div>
       </div>
 
-      {/* 요약 카드 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="p-4 space-y-1">
-          <p className="text-xs text-gray-500 font-medium">Selling Price ($ AUD)</p>
-          <p className="text-2xl font-bold text-gray-900">$ {sellingPrice.toFixed(2)}</p>
-        </Card>
-
-        <Card className="p-4 space-y-1">
-          <p className="text-xs text-gray-500 font-medium">Total Food Cost</p>
-          <p className="text-2xl font-bold text-red-500">${totalFoodCost.toFixed(2)} AUD</p>
-        </Card>
-
-        <Card className="p-4 space-y-1">
-          <p className="text-xs text-gray-500 font-medium">Margin ($)</p>
-          <p className="text-2xl font-bold text-blue-600">${marginDollar.toFixed(2)} AUD</p>
-        </Card>
-
-        <div className="bg-slate-900 text-white rounded-xl p-4 flex flex-col justify-center">
-          <p className="text-xs text-gray-400 font-medium">Food Cost % (원가율)</p>
-          <p className="text-3xl font-bold text-amber-400">{foodCostRatio.toFixed(1)}%</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-white border rounded-2xl p-4 shadow-sm">
+          <span className="text-xs text-slate-400 block font-semibold">Selling Price ($ AUD)</span>
+          <span className="text-xl font-black text-slate-900">${sellingPrice.toFixed(2)}</span>
+        </div>
+        <div className="bg-white border rounded-2xl p-4 shadow-sm">
+          <span className="text-xs text-slate-400 block font-semibold">Total Food Cost</span>
+          <span className="text-xl font-black text-red-600">${totalFoodCost.toFixed(2)} AUD</span>
+        </div>
+        <div className="bg-white border rounded-2xl p-4 shadow-sm">
+          <span className="text-xs text-slate-400 block font-semibold">Margin ($)</span>
+          <span className="text-xl font-black text-blue-600">${margin.toFixed(2)} AUD</span>
+        </div>
+        <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-sm">
+          <span className="text-xs text-slate-400 block font-semibold">Food Cost % (원가율)</span>
+          <span className="text-xl font-black text-amber-400">{foodCostPercent.toFixed(1)}%</span>
         </div>
       </div>
 
-      <div className="space-y-4">
-        <div className="flex items-center justify-between border-b pb-4">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <Package size={20} /> Recipe Structure
-          </h2>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => setIsBulkModalOpen(true)} className="flex items-center gap-2 rounded-xl">
-              <Layers size={16} /> Bulk Input
-            </Button>
-            <Button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl">
-              <Plus size={16} /> Add Ingredient
-            </Button>
-          </div>
-        </div>
+      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+          <Calculator size={18} /> Recipe Structure ({recipeIngredients.length} items)
+        </h3>
 
-        <Card className="p-5 border rounded-2xl space-y-4 bg-white shadow-xs">
-          <div className="flex justify-between items-center border-b pb-3">
-            <span className="text-sm font-bold text-slate-800 px-3 py-1 bg-slate-100 rounded-xl flex items-center gap-1.5">
-              🏷️ {menuItem?.name || "Recipe Menu"}
-            </span>
-            <span className="text-xs font-semibold text-slate-500">
-              Subtotal: ${totalFoodCost.toFixed(2)} AUD
-            </span>
+        {recipeIngredients.length === 0 ? (
+          <div className="text-center py-12 text-slate-400 text-sm">
+            No ingredients added yet. Click "+ Add Ingredient" to start.
           </div>
-
-          <div className="divide-y">
+        ) : (
+          <div className="space-y-2">
             {recipeIngredients.map((item) => (
-              <div key={item.id} className="py-3 flex justify-between items-center text-sm hover:bg-slate-50 px-2 rounded-xl transition-colors">
+              <div key={item.id} className="flex items-center justify-between p-3 bg-slate-50 border rounded-xl">
                 <div>
-                  <p className="font-bold text-slate-900">{item.name}</p>
-                  <p className="text-xs text-slate-400">
-                    Qty: <span className="font-semibold text-slate-700">{item.quantityGrams}g</span> 
-                    {item.quantityGrams >= 1000 && ` (${(item.quantityGrams / 1000).toFixed(3)}kg)`}
+                  <h4 className="font-bold text-slate-800 text-sm">{item.name}</h4>
+                  <p className="text-xs text-slate-500">
+                    Section: {item.sectionName} / Qty: {item.quantityGrams}{item.displayUnit} / Unit Cost: ${item.costPerGram.toFixed(4)}
                   </p>
                 </div>
                 <div className="flex items-center gap-4">
-                  <span className="font-bold text-slate-900">${item.totalCost.toFixed(2)}</span>
-                  <button onClick={() => handleDelete(item.id)} className="text-red-400 hover:text-red-600 transition-colors p-1">
-                    <Trash2 size={15} />
-                  </button>
+                  <span className="font-bold text-slate-900 text-sm">${item.totalCost.toFixed(2)} AUD</span>
+                  <Button variant="ghost" size="icon" onClick={() => handleDeleteIngredient(item.id)}>
+                    <Trash2 size={16} className="text-red-500" />
+                  </Button>
                 </div>
               </div>
             ))}
-
-            {recipeIngredients.length === 0 && (
-              <p className="text-center text-sm text-slate-400 py-8">No ingredients added yet. Click "+ Add Ingredient" to start.</p>
-            )}
           </div>
-        </Card>
+        )}
       </div>
 
-      {/* 모달창들 */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl relative overflow-visible">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full space-y-4">
             <h2 className="text-lg font-bold">Add Ingredient to Recipe</h2>
             <form onSubmit={handleAddIngredient} className="space-y-4">
-              
-              <div className="relative space-y-1">
-                <label className="block text-xs font-semibold text-slate-700">Ingredient Search</label>
-                <div className="relative">
-                  <Search size={16} className="absolute left-3 top-3 text-slate-400" />
-                  <Input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => {
-                      setSearchQuery(e.target.value);
-                      setSelectedIngredient(null);
-                      setIsDropdownOpen(true);
-                    }}
-                    onFocus={() => setIsDropdownOpen(true)}
-                    placeholder="Type to search..."
-                    className="pl-9 bg-slate-50 rounded-xl"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1">Ingredient Search</label>
+                <Input 
+                  value={searchTerm} 
+                  onChange={(e) => setSearchTerm(e.target.value)} 
+                  placeholder="Type to search master ingredients..." 
+                  className="rounded-xl" 
+                />
+              </div>
 
-                {isDropdownOpen && (
-                  <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-52 overflow-y-auto z-50 divide-y">
-                    {filteredMasterList.map((ing) => {
-                      const isSelected = selectedIngredient?.id === ing.id;
-                      const pAmt = ing.purchaseAmount || 1000;
-                      const u = ing.unit || "g";
-                      const prc = ing.totalPrice || 0;
-
-                      return (
-                        <div
-                          key={ing.id}
-                          onClick={() => handleSelectIngredient(ing)}
-                          className={`p-3 text-xs flex justify-between items-center cursor-pointer transition-colors hover:bg-slate-100 ${
-                            isSelected ? "bg-blue-50 text-blue-900 font-bold" : "text-slate-800"
-                          }`}
-                        >
-                          <div>
-                            <p className="font-bold text-sm text-slate-900">{ing.name}</p>
-                            <p className="text-slate-500">Purchased: {pAmt}{u} (${prc.toFixed(2)})</p>
-                          </div>
-                          <div className="text-right flex items-center gap-2">
-                            <span className="font-bold text-blue-600">${(ing.costPerGram * 1000).toFixed(2)}/kg</span>
-                            {isSelected && <Check size={14} className="text-blue-600" />}
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {filteredMasterList.length === 0 && (
-                      <div className="p-4 text-center text-xs text-slate-400">
-                        No matching ingredients found.
-                      </div>
-                    )}
-                  </div>
+              <div className="max-h-40 overflow-y-auto border rounded-xl p-2 space-y-1 bg-slate-50">
+                {filteredMasters.length === 0 ? (
+                  <div className="text-center py-4 text-xs text-slate-400">No master ingredients found. Please add ingredients first.</div>
+                ) : (
+                  filteredMasters.map((m) => (
+                    <div 
+                      key={m.id} 
+                      onClick={() => setSelectedMaster(m)}
+                      className={`p-2 rounded-lg cursor-pointer text-xs flex justify-between items-center transition-all ${
+                        selectedMaster?.id === m.id ? "bg-slate-900 text-white font-bold" : "bg-white hover:bg-slate-100 text-slate-800"
+                      }`}
+                    >
+                      <span>{m.name}</span>
+                      <span className="opacity-70">${m.costPerGram.toFixed(4)}/{m.unit}</span>
+                    </div>
+                  ))
                 )}
               </div>
 
-              {selectedIngredient && (
-                <div className="p-3 bg-blue-50 border border-blue-100 rounded-2xl text-xs space-y-1">
-                  <div className="flex justify-between font-semibold text-blue-900">
-                    <span>Selected: {selectedIngredient.name}</span>
-                    <span>${selectedIngredient.totalPrice?.toFixed(2) || "0.00"}</span>
-                  </div>
-                  <div className="flex justify-between text-blue-700">
-                    <span>Yield: {selectedIngredient.yieldPercent || 100}%</span>
-                    <span className="font-bold">Effective: ${(selectedIngredient.costPerGram * 1000).toFixed(2)} / kg</span>
-                  </div>
+              {selectedMaster && (
+                <div>
+                  <label className="block text-xs font-semibold mb-1">Quantity ({selectedMaster.unit})</label>
+                  <Input 
+                    type="number" 
+                    step="0.01" 
+                    value={quantity} 
+                    onChange={(e) => setQuantity(e.target.value === "" ? "" : Number(e.target.value))} 
+                    required 
+                    className="rounded-xl" 
+                  />
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Quantity to Use (Grams / ml)</label>
-                <Input
-                  type="number"
-                  step="0.1"
-                  value={quantityGrams}
-                  onChange={(e) => setQuantityGrams(e.target.value === "" ? "" : Number(e.target.value))}
-                  placeholder="e.g. 100"
-                  required
-                  className="rounded-xl"
-                />
+                <label className="block text-xs font-semibold mb-1">Section</label>
+                <select value={sectionName} onChange={(e) => setSectionName(e.target.value)} className="w-full border rounded-xl p-2.5 text-sm bg-white h-11">
+                  <option value="Stove">Stove</option>
+                  <option value="Wok">Wok</option>
+                  <option value="Base Sauce">Base Sauce</option>
+                  <option value="Cold">Cold</option>
+                  <option value="Deep Fried">Deep Fried</option>
+                  <option value="Extra">Extra</option>
+                </select>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={closeModal} className="rounded-xl">Cancel</Button>
-                <Button type="submit" disabled={!selectedIngredient} className="bg-slate-900 hover:bg-slate-800 text-white rounded-xl">Add to Recipe</Button>
+                <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)} className="rounded-xl">Cancel</Button>
+                <Button type="submit" disabled={!selectedMaster} className="bg-slate-900 text-white rounded-xl">Add</Button>
               </div>
             </form>
           </div>
@@ -437,21 +363,21 @@ export default function MenuItemDetails() {
       )}
 
       {isBulkModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full space-y-4">
             <h2 className="text-lg font-bold">Bulk Input Ingredients</h2>
-            <form onSubmit={handleBulkSubmit} className="space-y-4">
-              <textarea
-                rows={8}
+            <p className="text-xs text-gray-500">Enter format: Ingredient Name, Quantity (one per line)</p>
+            <form onSubmit={handleBulkAdd} className="space-y-4">
+              <textarea 
+                rows={6}
                 value={bulkText}
                 onChange={(e) => setBulkText(e.target.value)}
-                placeholder="e.g.&#10;Egg 58&#10;Onion 5&#10;Soft Tofu 250"
-                className="w-full border border-slate-200 rounded-2xl p-3 text-sm font-mono outline-none"
-                required
+                placeholder={"Garlic, 100\nBeef, 250\nOnion, 50"}
+                className="w-full border rounded-2xl p-3 text-sm outline-none bg-slate-50"
               />
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setIsBulkModalOpen(false)} className="rounded-xl">Cancel</Button>
-                <Button type="submit" className="rounded-xl">Add All</Button>
+                <Button type="submit" className="bg-slate-900 text-white rounded-xl">Import Bulk</Button>
               </div>
             </form>
           </div>
