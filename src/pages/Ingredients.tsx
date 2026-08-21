@@ -52,12 +52,14 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
-  // Supabase에서 재료 데이터 불러오기 (레시피와 동일한 전체 조회 방식)
   const fetchIngredients = async () => {
+    if (!currentUser?.username) return;
+
     try {
       const { data, error } = await supabase
         .from('ingredients')
-        .select('*');
+        .select('*')
+        .eq('user_id', currentUser.username);
 
       if (error) throw error;
 
@@ -92,8 +94,10 @@ export default function Ingredients() {
   };
 
   useEffect(() => {
-    fetchIngredients();
-  }, []);
+    if (currentUser?.username) {
+      fetchIngredients();
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (editingIngredient) {
@@ -144,6 +148,10 @@ export default function Ingredients() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser?.username) {
+      alert("Please log in first.");
+      return;
+    }
     if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
 
     const amt = Number(purchaseAmount);
@@ -156,7 +164,8 @@ export default function Ingredients() {
       unit,
       total_price: prc,
       yield_percent: yP,
-      supplier_id: selectedSupplierId
+      supplier_id: selectedSupplierId,
+      user_id: currentUser.username
     };
 
     try {
@@ -185,6 +194,10 @@ export default function Ingredients() {
 
   const handleBulkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser?.username) {
+      alert("Please log in first.");
+      return;
+    }
     if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
@@ -207,7 +220,8 @@ export default function Ingredients() {
           unit: u,
           total_price: priceNum,
           yield_percent: yP,
-          supplier_id: targetSup
+          supplier_id: targetSup,
+          user_id: currentUser.username
         });
       }
     });
@@ -228,7 +242,7 @@ export default function Ingredients() {
     }
   };
 
-  // JSON 파일 Import 시 Supabase에 데이터가 확실히 저장되도록 연동
+  // 안전하고 유연한 JSON Import 파싱 및 Supabase 저장 처리
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -236,17 +250,33 @@ export default function Ingredients() {
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const json = JSON.parse(event.target?.result as string);
-        const itemsToImport = json.ingredients || json;
+        if (!currentUser?.username) {
+          alert("Please log in first.");
+          return;
+        }
 
-        if (Array.isArray(itemsToImport) && itemsToImport.length > 0) {
-          const insertPayloads = itemsToImport.map((item: any) => ({
-            name: item.name,
-            purchase_amount: item.purchaseAmount || item.purchase_amount || 1000,
+        const json = JSON.parse(event.target?.result as string);
+        
+        // 다양한 JSON 구조 형태({ ingredients: [...] } 또는 배열 자체) 대응
+        let rawItems = [];
+        if (Array.isArray(json)) {
+          rawItems = json;
+        } else if (json && Array.isArray(json.ingredients)) {
+          rawItems = json.ingredients;
+        } else {
+          // 객체 형태인 경우 값들을 추출 시도
+          rawItems = Object.values(json).find(val => Array.isArray(val)) || [];
+        }
+
+        if (Array.isArray(rawItems) && rawItems.length > 0) {
+          const insertPayloads = rawItems.map((item: any) => ({
+            name: item.name || "Unnamed Ingredient",
+            purchase_amount: Number(item.purchaseAmount ?? item.purchase_amount ?? 1000),
             unit: item.unit || "g",
-            total_price: item.totalPrice || item.total_price || 0,
-            yield_percent: item.yieldPercent || item.yield_percent || 100,
-            supplier_id: item.supplierId || item.supplier_id || "sup_1"
+            total_price: Number(item.totalPrice ?? item.total_price ?? 0),
+            yield_percent: Number(item.yieldPercent ?? item.yield_percent ?? 100),
+            supplier_id: item.supplierId || item.supplier_id || "sup_1",
+            user_id: currentUser.username
           }));
 
           const { error } = await supabase
@@ -258,7 +288,7 @@ export default function Ingredients() {
           await fetchIngredients();
           alert("Imported and saved to database successfully!");
         } else {
-          alert("No ingredients found in the JSON file.");
+          alert("No valid ingredients array found in the JSON file.");
         }
       } catch (err) {
         alert("Failed to parse or save the backup file to database.");
@@ -493,7 +523,7 @@ export default function Ingredients() {
 
       {isBulkModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-xl rounded-xl p-6 max-w-lg w-full space-y-4">
+          <div className="bg-white rounded-xl p-6 max-w-lg w-full space-y-4">
             <h2 className="text-lg font-bold">Bulk Input</h2>
             <form onSubmit={handleBulkSubmit} className="space-y-4">
               <textarea rows={8} value={bulkText} onChange={(e) => setBulkText(e.target.value)} placeholder="e.g. PorkBelly 1000g 14 70" className="w-full border rounded-lg p-3 text-sm font-mono outline-none" required />
