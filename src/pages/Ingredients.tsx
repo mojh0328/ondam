@@ -265,26 +265,31 @@ export default function Ingredients() {
     setIngredients(updated);
     localStorage.setItem(storageKey, JSON.stringify(updated));
 
+    // 🌟 Supabase DB 실시간 저장 연동 보완
     if (currentUser?.username) {
-      if (editingIngredient) {
-        await supabase.from('ingredients').update({
-          name,
-          purchase_amount: amt,
-          unit,
-          total_price: price,
-          yield_percent: yP,
-          supplier_id: selectedSupplierId
-        }).eq('id', editingIngredient.id);
-      } else {
-        await supabase.from('ingredients').insert([{
-          user_id: currentUser.username,
-          name,
-          purchase_amount: amt,
-          unit,
-          total_price: price,
-          yield_percent: yP,
-          supplier_id: selectedSupplierId
-        }]);
+      try {
+        if (editingIngredient) {
+          await supabase.from('ingredients').update({
+            name,
+            purchase_amount: amt,
+            unit,
+            total_price: price,
+            yield_percent: yP,
+            supplier_id: selectedSupplierId
+          }).eq('id', editingIngredient.id);
+        } else {
+          await supabase.from('ingredients').insert([{
+            user_id: currentUser.username,
+            name,
+            purchase_amount: amt,
+            unit,
+            total_price: price,
+            yield_percent: yP,
+            supplier_id: selectedSupplierId
+          }]);
+        }
+      } catch (dbErr) {
+        console.error("Supabase sync error:", dbErr);
       }
     }
 

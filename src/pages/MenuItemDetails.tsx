@@ -44,46 +44,48 @@ export default function MenuItemDetail() {
   const [sectionName, setSectionName] = useState("Stove");
 
   const storeId = "13";
-  const currentUsername = currentUser?.username || 'default';
-  const menuStorageKey = `store_menu_${storeId}_${currentUsername}`;
 
   const fetchRecipeDetail = async () => {
     try {
-      // 1. 계정별 레시피 및 메뉴 정보 로드
-      const savedLocal = localStorage.getItem(menuStorageKey);
-      let allRecipesData: any = {};
-      
-      if (savedLocal) {
-        const parsed = JSON.parse(savedLocal);
-        const menuList = parsed.menuItems || [];
-        const foundMenu = menuList.find((m: any) => String(m.id) === String(recipeId));
-        if (foundMenu) {
-          setMenuName(foundMenu.name || "Recipe Menu");
-          setSellingPrice(Number(foundMenu.price || 0));
-        }
+      // 1. Supabase `recipes` 테이블에서 현재 레시피 정보 조회
+      const { data: recipeData, error: recipeError } = await supabase
+        .from("recipes")
+        .select("*")
+        .eq("id", recipeId)
+        .maybeSingle();
 
-        allRecipesData = parsed.recipes || {};
-        const rawItems = allRecipesData[recipeId];
-        if (rawItems && Array.isArray(rawItems)) {
-          const mapped = rawItems.map((item: any) => {
-            const q = Number(item.quantityGrams || 0);
-            const c = Number(item.costPerGram || 0);
-            return {
-              id: String(item.id || Date.now() + Math.random()),
-              ingredientId: String(item.ingredientId || ""),
-              name: item.name || "",
-              quantityGrams: q,
-              displayUnit: item.displayUnit || "g",
-              costPerGram: c,
-              totalCost: Number(item.totalCost || (q * c)),
-              sectionName: item.sectionName || "Stove"
-            };
-          });
-          setRecipeIngredients(mapped);
-        }
+      if (recipeError) throw recipeError;
+      if (recipeData) {
+        setMenuName(recipeData.title || "Recipe Menu");
+        setSellingPrice(Number(recipeData.selling_price || 0));
       }
 
-      // 2. Supabase `ingredients` 테이블에서 현재 계정의 마스터 재료 목록 조회
+      // 2. Supabase `recipe_ingredients` 테이블에서 해당 레시피의 재료 목록 조회
+      const { data: riData, error: riError } = await supabase
+        .from("recipe_ingredients")
+        .select("*")
+        .eq("recipe_id", recipeId);
+
+      if (riError) throw riError;
+      if (riData) {
+        const mapped: RecipeItem[] = riData.map((item: any) => {
+          const q = Number(item.quantity_grams || 0);
+          const c = Number(item.cost_per_gram || 0);
+          return {
+            id: String(item.id),
+            ingredientId: String(item.ingredient_id || ""),
+            name: item.ingredient_name || "Ingredient",
+            quantityGrams: q,
+            displayUnit: item.display_unit || "g",
+            costPerGram: c,
+            totalCost: Number(item.total_cost || (q * c)),
+            sectionName: item.section_name || "Stove"
+          };
+        });
+        setRecipeIngredients(mapped);
+      }
+
+      // 3. Supabase `ingredients` 테이블에서 현재 계정의 마스터 재료 목록 조회
       let query = supabase.from("ingredients").select("*");
       if (currentUser?.username) {
         query = query.eq("user_id", currentUser.username);
@@ -128,40 +130,56 @@ export default function MenuItemDetail() {
     }
   }, [recipeId, currentUser]);
 
-  const handleAddIngredient = (e: React.FormEvent) => {
+  const handleAddIngredient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMaster || quantity === "") return;
 
     const qty = Number(quantity);
     const total = qty * selectedMaster.costPerGram;
 
-    const newItem: RecipeItem = {
-      id: String(Date.now()),
-      ingredientId: selectedMaster.id,
-      name: selectedMaster.name,
-      quantityGrams: qty,
-      displayUnit: selectedMaster.unit,
-      costPerGram: selectedMaster.costPerGram,
-      totalCost: total,
-      sectionName
-    };
+    try {
+      const { data, error } = await supabase.from("recipe_ingredients").insert([{
+        recipe_id: recipeId,
+        ingredient_id: selectedMaster.id,
+        ingredient_name: selectedMaster.name,
+        quantity_grams: qty,
+        display_unit: selectedMaster.unit,
+        cost_per_gram: selectedMaster.costPerGram,
+        total_cost: total,
+        section_name: sectionName
+      }]).select().single();
 
-    const updated = [...recipeIngredients, newItem];
-    setRecipeIngredients(updated);
-    saveToLocalStorage(updated);
+      if (error) throw error;
 
-    setSelectedMaster(null);
-    setQuantity("");
-    setSearchTerm("");
-    setIsModalOpen(false);
+      const newItem: RecipeItem = {
+        id: String(data?.id || Date.now()),
+        ingredientId: selectedMaster.id,
+        name: selectedMaster.name,
+        quantityGrams: qty,
+        displayUnit: selectedMaster.unit,
+        costPerGram: selectedMaster.costPerGram,
+        totalCost: total,
+        sectionName
+      };
+
+      setRecipeIngredients([...recipeIngredients, newItem]);
+      setSelectedMaster(null);
+      setQuantity("");
+      setSearchTerm("");
+      setIsModalOpen(false);
+    } catch (err: any) {
+      console.error("Failed to add ingredient:", err);
+      alert(`Add failed: ${err.message || err}`);
+    }
   };
 
-  const handleBulkAdd = (e: React.FormEvent) => {
+  const handleBulkAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
-    const newItems: RecipeItem[] = [];
+    const newItemsToInsert: any[] = [];
+    const localNewItems: RecipeItem[] = [];
 
     lines.forEach((line) => {
       const parts = line.split(/[\t,]/);
@@ -170,46 +188,60 @@ export default function MenuItemDetail() {
         const qty = Number(parts[1].trim()) || 0;
         const found = masterIngredients.find(m => m.name.toLowerCase() === name.toLowerCase());
         const cpg = found ? found.costPerGram : 0;
+        const total = qty * cpg;
 
-        newItems.push({
-          id: String(Date.now() + Math.random()),
-          ingredientId: found ? found.id : String(Date.now()),
-          name,
-          quantityGrams: qty,
-          displayUnit: found ? found.unit : "g",
-          costPerGram: cpg,
-          totalCost: qty * cpg,
-          sectionName: "Stove"
+        newItemsToInsert.push({
+          recipe_id: recipeId,
+          ingredient_id: found ? found.id : String(Date.now()),
+          ingredient_name: name,
+          quantity_grams: qty,
+          display_unit: found ? found.unit : "g",
+          cost_per_gram: cpg,
+          total_cost: total,
+          section_name: "Stove"
         });
       }
     });
 
-    if (newItems.length > 0) {
-      const updated = [...recipeIngredients, ...newItems];
-      setRecipeIngredients(updated);
-      saveToLocalStorage(updated);
-      setBulkText("");
-      setIsBulkModalOpen(false);
+    if (newItemsToInsert.length > 0) {
+      try {
+        const { data, error } = await supabase.from("recipe_ingredients").insert(newItemsToInsert).select();
+        if (error) throw error;
+
+        if (data) {
+          const mapped = data.map((item: any) => ({
+            id: String(item.id),
+            ingredientId: String(item.ingredient_id),
+            name: item.ingredient_name,
+            quantityGrams: Number(item.quantity_grams),
+            displayUnit: item.display_unit,
+            costPerGram: Number(item.cost_per_gram),
+            totalCost: Number(item.total_cost),
+            sectionName: item.section_name
+          }));
+          setRecipeIngredients([...recipeIngredients, ...mapped]);
+        }
+
+        setBulkText("");
+        setIsBulkModalOpen(false);
+      } catch (err: any) {
+        console.error("Bulk add failed:", err);
+        alert(`Bulk add failed: ${err.message || err}`);
+      }
     }
   };
 
-  const saveToLocalStorage = (updatedItems: RecipeItem[]) => {
-    try {
-      const savedLocal = localStorage.getItem(menuStorageKey);
-      let parsed = savedLocal ? JSON.parse(savedLocal) : { menuItems: [], recipes: {} };
-      if (!parsed.recipes) parsed.recipes = {};
-      parsed.recipes[recipeId] = updatedItems;
-      localStorage.setItem(menuStorageKey, JSON.stringify(parsed));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleDeleteIngredient = (id: string) => {
+  const handleDeleteIngredient = async (id: string) => {
     if (confirm("Delete this ingredient?")) {
-      const updated = recipeIngredients.filter(i => i.id !== id);
-      setRecipeIngredients(updated);
-      saveToLocalStorage(updated);
+      try {
+        const { error } = await supabase.from("recipe_ingredients").delete().eq("id", id);
+        if (error) throw error;
+
+        setRecipeIngredients(recipeIngredients.filter(i => i.id !== id));
+      } catch (err: any) {
+        console.error("Failed to delete ingredient:", err);
+        alert(`Delete failed: ${err.message || err}`);
+      }
     }
   };
 

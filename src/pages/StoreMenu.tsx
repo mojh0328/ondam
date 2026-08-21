@@ -24,7 +24,6 @@ export default function StoreMenu() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { currentUser } = useAuth();
 
-  // 기본 폴더 목록을 비어 있는 상태([])로 시작하여 새 계정엔 폴더가 없게 설정
   const [folders, setFolders] = useState<MenuFolder[]>([]);
   const [activeFolderId, setActiveFolderId] = useState<string>("all");
   
@@ -38,12 +37,10 @@ export default function StoreMenu() {
   const [price, setPrice] = useState<number | "">("");
   const [selectedFolderId, setSelectedFolderId] = useState("");
 
-  // 폴더 추가 모달 상태
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
 
   const currentUsername = currentUser?.username || 'default';
-  const storageKey = `store_menu_${storeId}_${currentUsername}`;
   const folderKey = `store_folders_${storeId}_${currentUsername}`;
 
   const fetchRecipes = async () => {
@@ -53,54 +50,63 @@ export default function StoreMenu() {
         const parsedFolders = JSON.parse(savedFolders);
         if (Array.isArray(parsedFolders)) {
           setFolders(parsedFolders);
-          if (parsedSuppliersCheck(parsedFolders) && activeFolderId === "all") {
-            // 유지
-          }
         }
       } else {
         setFolders([]);
-        setActiveFolderId("all");
       }
 
-      const savedLocal = localStorage.getItem(storageKey);
-      if (savedLocal) {
-        const parsed = JSON.parse(savedLocal);
-        const list = parsed.menuItems || parsed.store_menu_13 || [];
-        if (Array.isArray(list)) {
-          setMenuItems(list);
-          calculateAllCosts(list, parsed.recipes || {});
-          return;
-        }
+      // 🌟 Supabase `recipes` 테이블에서 현재 유저의 레시피 목록 조회
+      let query = supabase.from('recipes').select('*');
+      if (currentUser?.username) {
+        query = query.eq('user_id', currentUser.username);
+      } else {
+        query = query.eq('user_id', 'default');
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        const mappedItems: MenuItem[] = data.map((r: any) => ({
+          id: String(r.id),
+          name: r.title,
+          price: Number(r.selling_price || 0),
+          folderId: r.folder_id || "default"
+        }));
+        setMenuItems(mappedItems);
+        calculateAllCosts(mappedItems);
       } else {
         setMenuItems([]);
       }
     } catch (err) {
-      console.error("Failed to fetch recipes:", err);
+      console.error("Failed to fetch recipes from Supabase:", err);
     }
   };
 
-  function parsedSuppliersCheck(flds: MenuFolder[]) {
-    return flds.length > 0;
-  }
+  const calculateAllCosts = async (items: MenuItem[]) => {
+    try {
+      const { data: recipeIngs, error } = await supabase.from('recipe_ingredients').select('*');
+      if (error) throw error;
 
-  const calculateAllCosts = (items: MenuItem[], recipesMap: any) => {
-    const costsMap: { [key: string]: { totalCost: number; foodCostPercent: number } } = {};
-    
-    items.forEach((item) => {
-      const ingList = recipesMap[item.id] || [];
-      const totalCost = ingList.reduce((sum: number, ing: any) => sum + Number(ing.totalCost || ing.total_cost || 0), 0);
-      const foodCostPercent = item.price > 0 ? (totalCost / item.price) * 100 : 0;
-      costsMap[item.id] = { totalCost, foodCostPercent };
-    });
+      const costsMap: { [key: string]: { totalCost: number; foodCostPercent: number } } = {};
+      
+      items.forEach((item) => {
+        const matchingIngs = recipeIngs?.filter((ri: any) => String(ri.recipe_id) === String(item.id)) || [];
+        const totalCost = matchingIngs.reduce((sum: number, ing: any) => sum + Number(ing.total_cost || 0), 0);
+        const foodCostPercent = item.price > 0 ? (totalCost / item.price) * 100 : 0;
+        costsMap[item.id] = { totalCost, foodCostPercent };
+      });
 
-    setRecipeCosts(costsMap);
+      setRecipeCosts(costsMap);
+    } catch (err) {
+      console.error("Failed to calculate recipe costs:", err);
+    }
   };
 
   useEffect(() => {
     fetchRecipes();
   }, [storeId, currentUser]);
 
-  // 폴더 추가 핸들러
   const handleAddFolder = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFolderName.trim()) return;
@@ -122,7 +128,6 @@ export default function StoreMenu() {
     }
   };
 
-  // 폴더 삭제 핸들러
   const handleDeleteFolder = (fldId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Are you sure you want to delete this folder?")) {
@@ -136,110 +141,6 @@ export default function StoreMenu() {
     }
   };
 
-  const handleExportRecipes = () => {
-    try {
-      const localData = localStorage.getItem(storageKey);
-      let recipesObj = {};
-      if (localData) {
-        try {
-          const parsed = JSON.parse(localData);
-          recipesObj = parsed.recipes || {};
-        } catch (e) {}
-      }
-
-      const exportData: any = { 
-        storeId,
-        folders,
-        menuItems,
-        recipes: recipesObj 
-      };
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
-      const downloadAnchor = document.createElement("a");
-      const today = new Date().toISOString().slice(0, 10);
-      
-      downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", `recipes-backup-${currentUsername}-${today}.json`);
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
-      alert("Recipes exported successfully!");
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleImportRecipes = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const json = JSON.parse(event.target?.result as string);
-        
-        let importedFolders = folders;
-        const folderKeyFound = Object.keys(json).find(k => k.startsWith("store_folders_"));
-        if (folderKeyFound && Array.isArray(json[folderKeyFound]) && json[folderKeyFound].length > 0) {
-          importedFolders = json[folderKeyFound];
-        } else if (Array.isArray(json.folders) && json.folders.length > 0) {
-          importedFolders = json.folders;
-        }
-
-        setFolders(importedFolders);
-        localStorage.setItem(folderKey, JSON.stringify(importedFolders));
-        if (importedFolders.length > 0) {
-          setActiveFolderId(importedFolders[0].id);
-        }
-
-        let itemsToImport: any[] = [];
-        const menuKeyFound = Object.keys(json).find(k => k.startsWith("store_menu_"));
-        if (menuKeyFound && Array.isArray(json[menuKeyFound])) {
-          itemsToImport = json[menuKeyFound];
-        } else if (Array.isArray(json.menuItems)) {
-          itemsToImport = json.menuItems;
-        }
-
-        if (itemsToImport.length > 0) {
-          const validFolderIds = new Set(importedFolders.map(f => f.id));
-          const defaultFolderId = importedFolders[0]?.id || "";
-
-          const formattedImportedItems: MenuItem[] = itemsToImport.map((item: any) => {
-            let fId = item.folderId || item.folder_id;
-            if (!fId || !validFolderIds.has(fId)) {
-              fId = defaultFolderId;
-            }
-
-            return {
-              id: String(item.id || Date.now() + Math.random()),
-              name: item.name || item.title || "",
-              price: Number(item.price || item.selling_price || 0),
-              folderId: fId
-            };
-          });
-          
-          setMenuItems(formattedImportedItems);
-
-          const recipesData = json.recipes || {};
-          const dataToSave = {
-            menuItems: formattedImportedItems,
-            recipes: recipesData
-          };
-          localStorage.setItem(storageKey, JSON.stringify(dataToSave));
-          calculateAllCosts(formattedImportedItems, recipesData);
-
-          alert(`Successfully imported ${formattedImportedItems.length} menu items and recipe details!`);
-        } else {
-          alert("No menu items found in this backup file.");
-        }
-      } catch (err) {
-        console.error(err);
-        alert("Failed to import backup file.");
-      }
-    };
-    reader.readAsText(file);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
   const handleCreateOrUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || price === "" || !selectedFolderId) {
@@ -247,31 +148,35 @@ export default function StoreMenu() {
       return;
     }
 
-    const newItem: MenuItem = {
-      id: editingItem ? editingItem.id : String(Date.now()),
-      name,
-      price: Number(price),
-      folderId: selectedFolderId
-    };
+    const numericPrice = Number(price);
 
-    const updated = editingItem ? menuItems.map(i => i.id === editingItem.id ? newItem : i) : [...menuItems, newItem];
-    setMenuItems(updated);
+    try {
+      if (editingItem) {
+        const { error } = await supabase.from('recipes').update({
+          title: name,
+          selling_price: numericPrice,
+          folder_id: selectedFolderId
+        }).eq('id', editingItem.id);
 
-    const existingLocal = localStorage.getItem(storageKey);
-    let existingRecipes = {};
-    if (existingLocal) {
-      try {
-        const parsed = JSON.parse(existingLocal);
-        existingRecipes = parsed.recipes || {};
-      } catch (e) {}
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('recipes').insert([{
+          user_id: currentUser?.username || 'default',
+          store_id: storeId,
+          folder_id: selectedFolderId,
+          title: name,
+          selling_price: numericPrice
+        }]);
+
+        if (error) throw error;
+      }
+
+      await fetchRecipes();
+      closeModal();
+    } catch (err: any) {
+      console.error("Failed to save recipe:", err);
+      alert(`Save failed: ${err.message || err}`);
     }
-
-    localStorage.setItem(storageKey, JSON.stringify({
-      menuItems: updated,
-      recipes: existingRecipes
-    }));
-    calculateAllCosts(updated, existingRecipes);
-    closeModal();
   };
 
   const closeModal = () => {
@@ -281,26 +186,18 @@ export default function StoreMenu() {
     setPrice("");
   };
 
-  const handleDelete = (id: string, e: React.MouseEvent) => {
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm("Are you sure you want to delete this menu item?")) {
-      const updated = menuItems.filter(item => item.id !== id);
-      setMenuItems(updated);
-      
-      const existingLocal = localStorage.getItem(storageKey);
-      let existingRecipes = {};
-      if (existingLocal) {
-        try {
-          const parsed = JSON.parse(existingLocal);
-          existingRecipes = parsed.recipes || {};
-        } catch (e) {}
-      }
+    if (confirm("Are you sure you want to delete this recipe?")) {
+      try {
+        const { error } = await supabase.from('recipes').delete().eq('id', id);
+        if (error) throw error;
 
-      localStorage.setItem(storageKey, JSON.stringify({
-        menuItems: updated,
-        recipes: existingRecipes
-      }));
-      calculateAllCosts(updated, existingRecipes);
+        setMenuItems(menuItems.filter(item => item.id !== id));
+      } catch (err: any) {
+        console.error("Failed to delete recipe:", err);
+        alert(`Delete failed: ${err.message || err}`);
+      }
     }
   };
 
@@ -317,19 +214,15 @@ export default function StoreMenu() {
           <Link href="/"><Button variant="outline" size="icon"><ArrowLeft size={16} /></Button></Link>
           <div>
             <h1 className="text-2xl font-bold">Recipe & Menu Folders ({currentUsername})</h1>
-            <p className="text-gray-500 text-sm">Organize recipes with cloud sync & backup.</p>
+            <p className="text-gray-500 text-sm">Organize recipes with Supabase cloud sync.</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <input type="file" accept=".json" ref={fileInputRef} onChange={handleImportRecipes} className="hidden" />
-          <Button variant="outline" onClick={handleExportRecipes} className="bg-green-50 text-green-700 border-green-200"><Download size={16} /> Export</Button>
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="bg-blue-50 text-blue-700 border-blue-200"><Upload size={16} /> Import</Button>
           <Button onClick={() => { setEditingItem(null); setSelectedFolderId(folders[0]?.id || ""); setIsModalOpen(true); }} className="bg-slate-900 text-white"><Plus size={16} /> Add Recipe</Button>
         </div>
       </div>
 
-      {/* 폴더 탭 및 추가/삭제 영역 */}
       <div className="flex items-center gap-2 overflow-x-auto pb-2 border-b">
         <button
           onClick={() => setActiveFolderId("all")}
@@ -408,7 +301,6 @@ export default function StoreMenu() {
         )}
       </div>
 
-      {/* 폴더 추가 모달 */}
       {isFolderModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4">
@@ -427,7 +319,6 @@ export default function StoreMenu() {
         </div>
       )}
 
-      {/* 레시피 추가/수정 모달 */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full space-y-4">
