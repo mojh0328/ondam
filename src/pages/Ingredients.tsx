@@ -52,14 +52,12 @@ export default function Ingredients() {
   const [selectedSupplierId, setSelectedSupplierId] = useState("sup_1");
   const [bulkText, setBulkText] = useState("");
 
+  // Supabase 클라우드에서 전체 재료 데이터 실시간 조회
   const fetchIngredients = async () => {
-    if (!currentUser?.username) return;
-
     try {
       const { data, error } = await supabase
         .from('ingredients')
-        .select('*')
-        .eq('user_id', currentUser.username);
+        .select('*');
 
       if (error) throw error;
 
@@ -94,10 +92,8 @@ export default function Ingredients() {
   };
 
   useEffect(() => {
-    if (currentUser?.username) {
-      fetchIngredients();
-    }
-  }, [currentUser]);
+    fetchIngredients();
+  }, []);
 
   useEffect(() => {
     if (editingIngredient) {
@@ -148,10 +144,6 @@ export default function Ingredients() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser?.username) {
-      alert("Please log in first.");
-      return;
-    }
     if (!name.trim() || purchaseAmount === "" || totalPrice === "") return;
 
     const amt = Number(purchaseAmount);
@@ -164,8 +156,7 @@ export default function Ingredients() {
       unit,
       total_price: prc,
       yield_percent: yP,
-      supplier_id: selectedSupplierId,
-      user_id: currentUser.username
+      supplier_id: selectedSupplierId
     };
 
     try {
@@ -194,10 +185,6 @@ export default function Ingredients() {
 
   const handleBulkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser?.username) {
-      alert("Please log in first.");
-      return;
-    }
     if (!bulkText.trim()) return;
 
     const lines = bulkText.split("\n");
@@ -220,8 +207,7 @@ export default function Ingredients() {
           unit: u,
           total_price: priceNum,
           yield_percent: yP,
-          supplier_id: targetSup,
-          user_id: currentUser.username
+          supplier_id: targetSup
         });
       }
     });
@@ -242,7 +228,7 @@ export default function Ingredients() {
     }
   };
 
-  // 안전하고 유연한 JSON Import 파싱 및 Supabase 저장 처리
+  // master_ingredients 구조를 완벽하게 파싱하여 Supabase에 저장하도록 개선된 Import 함수
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -250,21 +236,17 @@ export default function Ingredients() {
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        if (!currentUser?.username) {
-          alert("Please log in first.");
-          return;
-        }
-
         const json = JSON.parse(event.target?.result as string);
         
-        // 다양한 JSON 구조 형태({ ingredients: [...] } 또는 배열 자체) 대응
+        // 올려주신 JSON 파일 구조처럼 master_ingredients 키가 있거나, ingredients 키가 있거나, 배열 자체인 경우 모두 대응
         let rawItems = [];
         if (Array.isArray(json)) {
           rawItems = json;
+        } else if (json && Array.isArray(json.master_ingredients)) {
+          rawItems = json.master_ingredients;
         } else if (json && Array.isArray(json.ingredients)) {
           rawItems = json.ingredients;
         } else {
-          // 객체 형태인 경우 값들을 추출 시도
           rawItems = Object.values(json).find(val => Array.isArray(val)) || [];
         }
 
@@ -275,8 +257,7 @@ export default function Ingredients() {
             unit: item.unit || "g",
             total_price: Number(item.totalPrice ?? item.total_price ?? 0),
             yield_percent: Number(item.yieldPercent ?? item.yield_percent ?? 100),
-            supplier_id: item.supplierId || item.supplier_id || "sup_1",
-            user_id: currentUser.username
+            supplier_id: item.supplierId || item.supplier_id || "sup_1"
           }));
 
           const { error } = await supabase
@@ -286,9 +267,9 @@ export default function Ingredients() {
           if (error) throw error;
 
           await fetchIngredients();
-          alert("Imported and saved to database successfully!");
+          alert(`Successfully imported ${insertPayloads.length} ingredients to Supabase!`);
         } else {
-          alert("No valid ingredients array found in the JSON file.");
+          alert("No master_ingredients array found in the JSON file.");
         }
       } catch (err) {
         alert("Failed to parse or save the backup file to database.");
@@ -307,7 +288,7 @@ export default function Ingredients() {
       const today = new Date().toISOString().slice(0, 10);
       
       downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", `ingredients-backup-${currentUser?.username}-${today}.json`);
+      downloadAnchor.setAttribute("download", `ingredients-backup-${today}.json`);
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
