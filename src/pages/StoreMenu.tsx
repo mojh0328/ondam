@@ -198,12 +198,13 @@ export default function StoreMenu() {
         }
 
         const itemsToImport = json.menuItems || [];
-        const recipesMap = json.recipes || {};
+        const recipesMap = json.recipes || {}; // 제공해주신 파일의 "recipes": { "14": [...] } 구조 매핑
 
         if (Array.isArray(itemsToImport) && itemsToImport.length > 0) {
           const defaultFolderId = importedFolders[0]?.id || "default";
 
           for (const item of itemsToImport) {
+            // 1. Supabase recipes 테이블에 메뉴 등록 후 생성된 UUID 반환 받기
             const { data: insertedRecipe, error: recError } = await supabase.from('recipes').insert([{
               user_id: currentUser?.username || 'default',
               store_id: storeId,
@@ -215,7 +216,9 @@ export default function StoreMenu() {
             if (recError || !insertedRecipe) continue;
 
             const newRecipeId = insertedRecipe.id;
-            const rawIngredients = item.ingredients || recipesMap[item.id] || recipesMap[item.name] || [];
+            
+            // 2. 백업 파일의 고유 ID(item.id)를 이용해 recipes 객체 내부의 하위 재료 배열 가져오기
+            const rawIngredients = recipesMap[item.id] || item.ingredients || recipesMap[item.name] || [];
 
             if (Array.isArray(rawIngredients) && rawIngredients.length > 0) {
               const riRows = rawIngredients.map((ing: any) => {
