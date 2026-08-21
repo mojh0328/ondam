@@ -43,7 +43,8 @@ export default function MenuItemDetail() {
   const [quantity, setQuantity] = useState<number | "">("");
   const [sectionName, setSectionName] = useState("Stove");
 
-  const storeId = "13";
+  // 🌟 하드코딩 대신 상태로 관리하여 DB에서 가져온 store_id를 동적으로 반영
+  const [storeId, setStoreId] = useState("13");
 
   const fetchRecipeDetail = async () => {
     try {
@@ -57,6 +58,9 @@ export default function MenuItemDetail() {
       if (recipeData) {
         setMenuName(recipeData.title || "Recipe Menu");
         setSellingPrice(Number(recipeData.selling_price || 0));
+        if (recipeData.store_id) {
+          setStoreId(String(recipeData.store_id)); // 🌟 DB에 저장된 실제 스토어 ID 연동
+        }
       }
 
       const { data: riData, error: riError } = await supabase
